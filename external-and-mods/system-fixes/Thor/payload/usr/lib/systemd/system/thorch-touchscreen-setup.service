@@ -1,10 +1,12 @@
 [Unit]
-Description=Apply Thorch touchscreen calibration before display login
+Description=Apply Thorch touchscreen calibration before display login (AYN Thor only)
 After=systemd-udevd.service
 Before=display-manager.service
+ConditionPathExists=/proc/device-tree/compatible
 
 [Service]
 Type=oneshot
+ExecCondition=/bin/sh -c 'tr -d "\\0" < /proc/device-tree/compatible | grep -q ayn,thor'
 ExecStart=/usr/bin/thorch-touchscreen-setup
 
 [Install]

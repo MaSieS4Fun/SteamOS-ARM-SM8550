@@ -29,7 +29,11 @@ Arranque del usuario
       → se desactiva para siempre
 
   • Cualquier otro dispositivo
-      → no hace nada y se desactiva para siempre
+      → no aplica el patch, quita restos si los hubiera, y se desactiva
+
+  Do not enable thorch-touchscreen-setup or the KDE autostart files in the
+  shared image. Only odin3-thor-autoinstall.service is enabled; it checks
+  /proc/device-tree/compatible for ayn,thor before applying anything.
 
 Requisitos del patch (solo en Thor)
 -----------------------------------

@@ -20,6 +20,24 @@ retire() {
 	systemctl disable odin3-thor-autoinstall.service >/dev/null 2>&1 || true
 }
 
+# If a previous image enabled the Thor touch stack on every SM8550, strip it.
+strip_thor_fix() {
+	systemctl disable --now thorch-touchscreen-setup.service >/dev/null 2>&1 || true
+	rm -f \
+		/etc/xdg/autostart/thorch-kwin-touch-map.desktop \
+		/etc/xdg/autostart/thorch-display-setup.desktop \
+		/etc/udev/rules.d/99-thorch-touchscreen-calibration.rules \
+		/run/udev/rules.d/99-thorch-touchscreen-calibration.rules \
+		/etc/systemd/system/multi-user.target.wants/thorch-touchscreen-setup.service \
+		/usr/lib/systemd/system/multi-user.target.wants/thorch-touchscreen-setup.service \
+		/var/lib/overlays/etc/upper/xdg/autostart/thorch-kwin-touch-map.desktop \
+		/var/lib/overlays/etc/upper/xdg/autostart/thorch-display-setup.desktop \
+		/var/lib/overlays/etc/upper/udev/rules.d/99-thorch-touchscreen-calibration.rules \
+		/var/lib/overlays/etc/upper/systemd/system/multi-user.target.wants/thorch-touchscreen-setup.service
+	udevadm control --reload >/dev/null 2>&1 || true
+	udevadm trigger --subsystem-match=input >/dev/null 2>&1 || true
+}
+
 apply_fix() {
 	local need=(
 		"${PAYLOAD}/usr/bin/thorch-kwin-touch-map"
@@ -62,14 +80,15 @@ apply_fix() {
 	log "Thor touch fix installed and enabled"
 }
 
-if [[ -f "${MARKER}" ]]; then
-	log "Marker present — retiring"
+if ! is_thor; then
+	log "Not AYN Thor (compatible != ayn,thor) — ignoring permanently"
+	strip_thor_fix
 	retire
 	exit 0
 fi
 
-if ! is_thor; then
-	log "Not AYN Thor (compatible != ayn,thor) — ignoring permanently"
+if [[ -f "${MARKER}" ]]; then
+	log "Marker present — retiring"
 	retire
 	exit 0
 fi

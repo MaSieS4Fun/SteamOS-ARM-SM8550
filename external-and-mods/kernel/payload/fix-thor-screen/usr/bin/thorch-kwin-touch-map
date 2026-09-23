@@ -1,5 +1,11 @@
 #!/usr/bin/env bash
+# Map Thor I2C touchscreens onto DSI-1 / DSI-2. Ignore all other devices.
 set -euo pipefail
+
+if [[ ! -f /proc/device-tree/compatible ]] \
+	|| ! tr -d '\0' < /proc/device-tree/compatible | grep -q 'ayn,thor'; then
+	exit 0
+fi
 
 export LC_ALL="${LC_ALL:-C.UTF-8}"
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"

@@ -1,5 +1,17 @@
 #!/usr/bin/env bash
+# Thor dual-panel udev hints. No-op on every other SM8550 handheld.
 set -euo pipefail
+
+is_thor() {
+	[[ -f /proc/device-tree/compatible ]] || return 1
+	tr -d '\0' < /proc/device-tree/compatible | grep -q 'ayn,thor'
+}
+
+if ! is_thor; then
+	rm -f /etc/udev/rules.d/99-thorch-touchscreen-calibration.rules \
+		/run/udev/rules.d/99-thorch-touchscreen-calibration.rules
+	exit 0
+fi
 
 write_rule() {
 	local path="$1"

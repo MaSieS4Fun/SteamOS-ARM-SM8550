@@ -121,40 +121,47 @@ if [[ -d "$R/var/lib/overlays/etc/upper" ]]; then
     || log "WARN: etc overlay upper not writable for plugin_loader drop-ins"
 fi
 
-# ── Thor: bake userspace now (SteamOS /usr is read-only at boot) ──
-log "AYN Thor touch (baked + autoinstall)"
+# ── Thor: stage detector + binaries. Apply the touch fix only on AYN Thor.
+# Previous images enabled thorch-* on every SM8550 and broke other panels.
+log "AYN Thor touch (detect at boot; ignore unless ayn,thor)"
 THOR="${MOD}/system-fixes/Thor"
 if [[ -x "${THOR}/install-auto.sh" ]]; then
   "${THOR}/install-auto.sh" --root "$R" || log "WARN: Thor autoinstall staging failed"
-  # Apply payload into the image so first boot does not need a writable /usr.
-  if [[ -d "${THOR}/payload/usr" ]]; then
-    cp -a "${THOR}/payload/usr/." "$R/usr/"
-    chmod 0755 "$R/usr/bin/thorch-kwin-touch-map" \
-      "$R/usr/bin/thorch-touchscreen-setup" \
-      "$R/usr/bin/thorch-display-setup" 2>/dev/null || true
+  # SteamOS /usr is often read-only. Keep binaries so Thor can run them.
+  # Scripts and the unit no-op unless device-tree compatible contains ayn,thor.
+  if [[ -d "${THOR}/payload/usr/bin" ]]; then
+    install -D -m 0755 "${THOR}/payload/usr/bin/thorch-kwin-touch-map" \
+      "$R/usr/bin/thorch-kwin-touch-map"
+    install -D -m 0755 "${THOR}/payload/usr/bin/thorch-touchscreen-setup" \
+      "$R/usr/bin/thorch-touchscreen-setup"
+    install -D -m 0755 "${THOR}/payload/usr/bin/thorch-display-setup" \
+      "$R/usr/bin/thorch-display-setup"
   fi
-  mkdir -p "$R/etc/xdg/autostart" "$R/etc/udev/rules.d" \
-    "$R/usr/lib/systemd/system/multi-user.target.wants"
-  if [[ -d "${THOR}/payload/etc/xdg/autostart" ]]; then
-    cp -a "${THOR}/payload/etc/xdg/autostart/." "$R/etc/xdg/autostart/"
+  if [[ -f "${THOR}/payload/usr/lib/systemd/system/thorch-touchscreen-setup.service" ]]; then
+    install -D -m 0644 \
+      "${THOR}/payload/usr/lib/systemd/system/thorch-touchscreen-setup.service" \
+      "$R/usr/lib/systemd/system/thorch-touchscreen-setup.service"
   fi
-  ln -sfn /usr/lib/systemd/system/thorch-touchscreen-setup.service \
-    "$R/usr/lib/systemd/system/multi-user.target.wants/thorch-touchscreen-setup.service"
+  # Never enable the Thor touch stack or KDE autostart on the shared image.
+  rm -f \
+    "$R/etc/xdg/autostart/thorch-kwin-touch-map.desktop" \
+    "$R/etc/xdg/autostart/thorch-display-setup.desktop" \
+    "$R/etc/udev/rules.d/99-thorch-touchscreen-calibration.rules" \
+    "$R/usr/lib/systemd/system/multi-user.target.wants/thorch-touchscreen-setup.service" \
+    "$R/etc/systemd/system/multi-user.target.wants/thorch-touchscreen-setup.service"
+  mkdir -p "$R/usr/lib/systemd/system/multi-user.target.wants"
   ln -sfn /usr/lib/systemd/system/odin3-thor-autoinstall.service \
     "$R/usr/lib/systemd/system/multi-user.target.wants/odin3-thor-autoinstall.service"
   if [[ -d "$R/var/lib/overlays/etc/upper" ]]; then
-    mkdir -p "$R/var/lib/overlays/etc/upper/xdg/autostart" \
-      "$R/var/lib/overlays/etc/upper/udev/rules.d" \
-      "$R/var/lib/overlays/etc/upper/systemd/system/multi-user.target.wants" 2>/dev/null || true
-    if [[ -d "${THOR}/payload/etc/xdg/autostart" ]]; then
-      cp -a "${THOR}/payload/etc/xdg/autostart/." \
-        "$R/var/lib/overlays/etc/upper/xdg/autostart/" 2>/dev/null || true
-    fi
+    rm -f \
+      "$R/var/lib/overlays/etc/upper/xdg/autostart/thorch-kwin-touch-map.desktop" \
+      "$R/var/lib/overlays/etc/upper/xdg/autostart/thorch-display-setup.desktop" \
+      "$R/var/lib/overlays/etc/upper/udev/rules.d/99-thorch-touchscreen-calibration.rules" \
+      "$R/var/lib/overlays/etc/upper/systemd/system/multi-user.target.wants/thorch-touchscreen-setup.service"
+    mkdir -p "$R/var/lib/overlays/etc/upper/systemd/system/multi-user.target.wants" \
+      2>/dev/null || true
     ln -sfn /usr/lib/systemd/system/odin3-thor-autoinstall.service \
       "$R/var/lib/overlays/etc/upper/systemd/system/multi-user.target.wants/odin3-thor-autoinstall.service" \
-      2>/dev/null || true
-    ln -sfn /usr/lib/systemd/system/thorch-touchscreen-setup.service \
-      "$R/var/lib/overlays/etc/upper/systemd/system/multi-user.target.wants/thorch-touchscreen-setup.service" \
       2>/dev/null || true
   fi
 else
