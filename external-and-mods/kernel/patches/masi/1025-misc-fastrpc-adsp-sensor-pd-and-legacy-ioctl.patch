@@ -1,0 +1,809 @@
+From: MaSi-OS <masi@local>
+Subject: [PATCH] misc: fastrpc: ADSP sensor PD routing + legacy ioctl (linux 7.0)
+
+Adapted from Batocera Custom Qualcomm Builds (suckbluefrog) for AYN Thor/Odin2
+gyro via ADSP SensorsPD. Uses dma_addr (linux 7.0) instead of downstream phys.
+
+--- a/drivers/misc/Kconfig	2026-07-17 17:58:00.632946436 +0200
++++ b/drivers/misc/Kconfig	2026-07-17 17:57:22.363744094 +0200
+@@ -300,8 +300,10 @@
+ config QCOM_FASTRPC
+ 	tristate "Qualcomm FastRPC"
+ 	depends on ARCH_QCOM || COMPILE_TEST
++	depends on NET
+ 	depends on RPMSG
+ 	select DMA_SHARED_BUFFER
++	select QCOM_PDR_HELPERS
+ 	select QCOM_SCM
+ 	help
+ 	  Provides a communication mechanism that allows for clients to
+
+--- a/drivers/misc/fastrpc.c	2026-07-17 17:58:00.631455000 +0200
++++ b/drivers/misc/fastrpc.c	2026-07-17 17:57:45.579272053 +0200
+@@ -20,8 +20,10 @@
+ #include <linux/scatterlist.h>
+ #include <linux/slab.h>
+ #include <linux/firmware/qcom/qcom_scm.h>
++#include <linux/soc/qcom/pdr.h>
+ #include <uapi/misc/fastrpc.h>
+ #include <linux/of_reserved_mem.h>
++#include <linux/wait.h>
+ #include <linux/bits.h>
+ 
+ #define ADSP_DOMAIN_ID (0)
+@@ -103,6 +105,114 @@
+ #define USER_PD		(1)
+ #define SENSORS_PD	(2)
+ 
++/* Context bank process types used by Qualcomm downstream DTs. */
++#define FASTRPC_PD_TYPE_UNSPECIFIED	(0)
++#define FASTRPC_PD_TYPE_ROOT		(1)
++#define FASTRPC_PD_TYPE_AUDIO		(2)
++#define FASTRPC_PD_TYPE_SENSORS		(3)
++#define FASTRPC_PD_TYPE_USER		(7)
++
++/*
++ * Qualcomm's downstream userspace ABI predates the upstream FastRPC UAPI.
++ * The ioctl numbers overlap, but their encoded sizes differ except for a
++ * few commands.  Once a file uses a downstream-only command, keep it in
++ * legacy mode so the overlapping invoke/map commands can be decoded
++ * unambiguously.
++ */
++#define FASTRPC_LEGACY_INIT_ATTACH		(0)
++#define FASTRPC_LEGACY_INIT_ATTACH_SENSORS	(3)
++
++struct fastrpc_legacy_remote_arg {
++	union {
++		struct {
++			u64 ptr;
++			u64 length;
++		} buf;
++		struct {
++			s32 fd;
++			u32 offset;
++			u32 length;
++			u32 reserved;
++		} dma;
++	};
++};
++
++struct fastrpc_legacy_invoke_fd {
++	struct fastrpc_invoke inv;
++	u64 fds;
++};
++
++struct fastrpc_legacy_invoke_attrs {
++	struct fastrpc_invoke inv;
++	u64 fds;
++	u64 attrs;
++};
++
++struct fastrpc_legacy_invoke_crc {
++	struct fastrpc_invoke inv;
++	u64 fds;
++	u64 attrs;
++	u64 crc;
++};
++
++struct fastrpc_legacy_init {
++	u32 flags;
++	u32 reserved;
++	u64 file;
++	u32 filelen;
++	s32 filefd;
++	u64 mem;
++	u32 memlen;
++	s32 memfd;
++};
++
++struct fastrpc_legacy_control {
++	u32 req;
++	u32 data[2];
++};
++
++struct fastrpc_legacy_session_info {
++	u32 domain;
++	u32 session;
++	u32 reserved;
++};
++
++struct fastrpc_legacy_capability {
++	u32 domain;
++	u32 attribute_id;
++	u32 capability;
++	u32 reserved[3];
++};
++
++#define FASTRPC_LEGACY_IOCTL_INVOKE \
++	_IOWR('R', 1, struct fastrpc_invoke)
++#define FASTRPC_LEGACY_IOCTL_MMAP \
++	_IOWR('R', 2, struct fastrpc_req_mmap)
++#define FASTRPC_LEGACY_IOCTL_MUNMAP \
++	_IOWR('R', 3, struct fastrpc_req_munmap)
++#define FASTRPC_LEGACY_IOCTL_INVOKE_FD \
++	_IOWR('R', 4, struct fastrpc_legacy_invoke_fd)
++#define FASTRPC_LEGACY_IOCTL_SETMODE \
++	_IOWR('R', 5, u32)
++#define FASTRPC_LEGACY_IOCTL_INIT \
++	_IOWR('R', 6, struct fastrpc_legacy_init)
++#define FASTRPC_LEGACY_IOCTL_INVOKE_ATTRS \
++	_IOWR('R', 7, struct fastrpc_legacy_invoke_attrs)
++#define FASTRPC_LEGACY_IOCTL_GETINFO \
++	_IOWR('R', 8, u32)
++#define FASTRPC_LEGACY_IOCTL_INVOKE_CRC \
++	_IOWR('R', 11, struct fastrpc_legacy_invoke_crc)
++#define FASTRPC_LEGACY_IOCTL_CONTROL \
++	_IOWR('R', 12, struct fastrpc_legacy_control)
++#define FASTRPC_LEGACY_IOCTL_MMAP_64 \
++	_IOWR('R', 14, struct fastrpc_req_mmap)
++#define FASTRPC_LEGACY_IOCTL_MUNMAP_64 \
++	_IOWR('R', 15, struct fastrpc_req_munmap)
++#define FASTRPC_LEGACY_IOCTL_SET_SESSION_INFO \
++	_IOWR('R', 17, struct fastrpc_legacy_session_info)
++#define FASTRPC_LEGACY_IOCTL_GET_DSP_INFO \
++	_IOWR('R', 18, struct fastrpc_legacy_capability)
++
+ #define miscdev_to_fdevice(d) container_of(d, struct fastrpc_device, miscdev)
+ 
+ struct fastrpc_phy_page {
+@@ -253,6 +363,7 @@
+ struct fastrpc_session_ctx {
+ 	struct device *dev;
+ 	int sid;
++	u32 pd_type;
+ 	bool used;
+ 	bool valid;
+ };
+@@ -280,7 +391,11 @@
+ 	struct fastrpc_device *secure_fdevice;
+ 	struct fastrpc_device *fdevice;
+ 	struct fastrpc_buf *remote_heap;
++	bool remote_heap_assigned;
+ 	struct list_head invoke_interrupted_mmaps;
++	struct pdr_handle *sensors_pdr;
++	wait_queue_head_t sensors_pd_waitq;
++	atomic_t sensors_pd_up;
+ 	bool secure;
+ 	bool unsigned_support;
+ 	u64 dma_mask;
+@@ -306,6 +421,7 @@
+ 	int client_id;
+ 	int pd;
+ 	bool is_secure_dev;
++	bool legacy_ioctl;
+ 	/* Lock for lists */
+ 	spinlock_t lock;
+ 	/* lock for allocations */
+@@ -332,6 +448,8 @@
+ 	return (u64)sctx->sid << cctx->soc_data->sid_pos;
+ }
+ 
++static void fastrpc_notify_users(struct fastrpc_user *user);
++
+ static void fastrpc_free_map(struct kref *ref)
+ {
+ 	struct fastrpc_map *map;
+@@ -1335,6 +1453,37 @@
+ 	return false;
+ }
+ 
++static int fastrpc_remote_heap_unassign(struct fastrpc_channel_ctx *cctx,
++					struct device *dev)
++{
++	struct qcom_scm_vmperm dst_perms;
++	u64 src_perms = 0;
++	u32 i;
++	int err;
++
++	if (!cctx->remote_heap || !cctx->vmcount ||
++	    !cctx->remote_heap_assigned)
++		return 0;
++
++	for (i = 0; i < cctx->vmcount; i++)
++		src_perms |= BIT(cctx->vmperms[i].vmid);
++
++	dst_perms.vmid = QCOM_SCM_VMID_HLOS;
++	dst_perms.perm = QCOM_SCM_PERM_RWX;
++
++	err = qcom_scm_assign_mem(cctx->remote_heap->dma_addr,
++				  (u64)cctx->remote_heap->size,
++				  &src_perms, &dst_perms, 1);
++	if (err)
++		dev_err(dev,
++			"Failed to return remote heap dma_addr %pad size 0x%llx to HLOS: %d\n",
++			&cctx->remote_heap->dma_addr, cctx->remote_heap->size, err);
++	else
++		cctx->remote_heap_assigned = false;
++
++	return err;
++}
++
+ static int fastrpc_init_create_static_process(struct fastrpc_user *fl,
+ 					      char __user *argp)
+ {
+@@ -1343,7 +1492,6 @@
+ 	struct fastrpc_phy_page pages[1];
+ 	char *name;
+ 	int err;
+-	bool scm_done = false;
+ 	struct {
+ 		int client_id;
+ 		u32 namelen;
+@@ -1392,7 +1540,7 @@
+ 					fl->cctx->remote_heap->size, err);
+ 				goto err_map;
+ 			}
+-			scm_done = true;
++			fl->cctx->remote_heap_assigned = true;
+ 		}
+ 	}
+ 
+@@ -1428,22 +1576,13 @@
+ 
+ 	return 0;
+ err_invoke:
+-	if (fl->cctx->vmcount && scm_done) {
+-		u64 src_perms = 0;
+-		struct qcom_scm_vmperm dst_perms;
+-		u32 i;
+-
+-		for (i = 0; i < fl->cctx->vmcount; i++)
+-			src_perms |= BIT(fl->cctx->vmperms[i].vmid);
+-
+-		dst_perms.vmid = QCOM_SCM_VMID_HLOS;
+-		dst_perms.perm = QCOM_SCM_PERM_RWX;
+-		err = qcom_scm_assign_mem(fl->cctx->remote_heap->dma_addr,
+-						(u64)fl->cctx->remote_heap->size,
+-						&src_perms, &dst_perms, 1);
+-		if (err)
+-			dev_err(fl->sctx->dev, "Failed to assign memory dma_addr %pad size 0x%llx err %d\n",
+-				&fl->cctx->remote_heap->dma_addr, fl->cctx->remote_heap->size, err);
++	if (fl->cctx->vmcount) {
++		int unassign_err;
++
++		unassign_err = fastrpc_remote_heap_unassign(fl->cctx,
++							   fl->sctx->dev);
++		if (unassign_err)
++			goto err_name;
+ 	}
+ err_map:
+ 	fastrpc_buf_free(fl->cctx->remote_heap);
+@@ -1572,8 +1711,7 @@
+ 	return err;
+ }
+ 
+-static struct fastrpc_session_ctx *fastrpc_session_alloc(
+-					struct fastrpc_user *fl)
++static int fastrpc_session_select(struct fastrpc_user *fl, u32 pd_type)
+ {
+ 	struct fastrpc_channel_ctx *cctx = fl->cctx;
+ 	struct fastrpc_session_ctx *session = NULL;
+@@ -1581,18 +1719,62 @@
+ 	int i;
+ 
+ 	spin_lock_irqsave(&cctx->lock, flags);
+-	for (i = 0; i < cctx->sesscount; i++) {
+-		if (!cctx->session[i].used && cctx->session[i].valid) {
+-			cctx->session[i].used = true;
+-			session = &cctx->session[i];
+-			/* any non-zero ID will work, session_idx + 1 is the simplest one */
+-			fl->client_id = i + 1;
+-			break;
++
++	if (fl->sctx &&
++	    (pd_type == FASTRPC_PD_TYPE_UNSPECIFIED ||
++	     fl->sctx->pd_type == pd_type))
++		goto out;
++
++	if (fl->sctx) {
++		fl->sctx->used = false;
++		fl->sctx = NULL;
++	}
++
++	if (pd_type != FASTRPC_PD_TYPE_UNSPECIFIED) {
++		for (i = 0; i < cctx->sesscount; i++) {
++			if (!cctx->session[i].used && cctx->session[i].valid &&
++			    cctx->session[i].pd_type == pd_type) {
++				session = &cctx->session[i];
++				break;
++			}
++		}
++	}
++
++	if (!session) {
++		for (i = 0; i < cctx->sesscount; i++) {
++			if (!cctx->session[i].used && cctx->session[i].valid &&
++			    cctx->session[i].pd_type == FASTRPC_PD_TYPE_UNSPECIFIED) {
++				session = &cctx->session[i];
++				break;
++			}
+ 		}
+ 	}
++
++	/*
++	 * Preserve the historical first-free behavior for DTs that only
++	 * describe some process types, or do not describe them at all.
++	 */
++	if (!session) {
++		for (i = 0; i < cctx->sesscount; i++) {
++			if (!cctx->session[i].used && cctx->session[i].valid) {
++				session = &cctx->session[i];
++				break;
++			}
++		}
++	}
++
++	if (session) {
++		session->used = true;
++		fl->sctx = session;
++		/* Any non-zero ID works; session index + 1 is the simplest. */
++		fl->client_id = session - cctx->session + 1;
++	}
++
++out:
++	session = fl->sctx;
+ 	spin_unlock_irqrestore(&cctx->lock, flags);
+ 
+-	return session;
++	return session ? 0 : -EBUSY;
+ }
+ 
+ static void fastrpc_session_free(struct fastrpc_channel_ctx *cctx,
+@@ -1600,11 +1782,122 @@
+ {
+ 	unsigned long flags;
+ 
++	if (!session)
++		return;
++
+ 	spin_lock_irqsave(&cctx->lock, flags);
+ 	session->used = false;
+ 	spin_unlock_irqrestore(&cctx->lock, flags);
+ }
+ 
++static int fastrpc_wait_for_sensor_pd(struct fastrpc_user *fl)
++{
++	struct fastrpc_channel_ctx *cctx = fl->cctx;
++	int err;
++
++	if (fl->pd != SENSORS_PD || !cctx->sensors_pdr)
++		return 0;
++
++	err = wait_event_interruptible(cctx->sensors_pd_waitq,
++				       atomic_read(&cctx->sensors_pd_up) ||
++				       !READ_ONCE(cctx->rpdev));
++	if (err)
++		return err;
++
++	return READ_ONCE(cctx->rpdev) ? 0 : -EPIPE;
++}
++
++static u32 fastrpc_ioctl_pd_type(unsigned int cmd)
++{
++	switch (cmd) {
++	case FASTRPC_IOCTL_INIT_ATTACH:
++		return FASTRPC_PD_TYPE_ROOT;
++	case FASTRPC_IOCTL_INIT_ATTACH_SNS:
++		return FASTRPC_PD_TYPE_SENSORS;
++	case FASTRPC_IOCTL_INIT_CREATE_STATIC:
++		return FASTRPC_PD_TYPE_AUDIO;
++	case FASTRPC_IOCTL_INIT_CREATE:
++		return FASTRPC_PD_TYPE_USER;
++	default:
++		return FASTRPC_PD_TYPE_UNSPECIFIED;
++	}
++}
++
++static bool fastrpc_ioctl_is_init(unsigned int cmd)
++{
++	return cmd == FASTRPC_IOCTL_INIT_ATTACH ||
++	       cmd == FASTRPC_IOCTL_INIT_ATTACH_SNS ||
++	       cmd == FASTRPC_IOCTL_INIT_CREATE_STATIC ||
++	       cmd == FASTRPC_IOCTL_INIT_CREATE;
++}
++
++static void fastrpc_sensor_pd_status(int state, char *service_path, void *priv)
++{
++	struct fastrpc_channel_ctx *cctx = priv;
++	struct fastrpc_user *user;
++	unsigned long flags;
++
++	switch (state) {
++	case SERVREG_SERVICE_STATE_UP:
++		atomic_set(&cctx->sensors_pd_up, 1);
++		wake_up_interruptible(&cctx->sensors_pd_waitq);
++		if (cctx->rpdev)
++			dev_info(&cctx->rpdev->dev, "%s is up\n",
++				 service_path);
++		break;
++	case SERVREG_SERVICE_STATE_DOWN:
++	case SERVREG_SERVICE_STATE_EARLY_DOWN:
++		atomic_set(&cctx->sensors_pd_up, 0);
++
++		spin_lock_irqsave(&cctx->lock, flags);
++		list_for_each_entry(user, &cctx->users, user) {
++			if (user->pd == SENSORS_PD)
++				fastrpc_notify_users(user);
++		}
++		spin_unlock_irqrestore(&cctx->lock, flags);
++
++		if (cctx->rpdev)
++			dev_info(&cctx->rpdev->dev, "%s is down\n",
++				 service_path);
++		break;
++	default:
++		break;
++	}
++}
++
++static int fastrpc_setup_sensor_pdr(struct fastrpc_channel_ctx *cctx,
++				    struct device *dev)
++{
++	struct pdr_service *service;
++	int err;
++
++	if (!of_property_read_bool(dev->of_node,
++				   "qcom,fastrpc-adsp-sensors-pdr"))
++		return 0;
++
++	cctx->sensors_pdr = pdr_handle_alloc(fastrpc_sensor_pd_status, cctx);
++	if (IS_ERR(cctx->sensors_pdr)) {
++		err = PTR_ERR(cctx->sensors_pdr);
++		cctx->sensors_pdr = NULL;
++		return dev_err_probe(dev, err,
++				     "failed to initialize sensors PDR\n");
++	}
++
++	service = pdr_add_lookup(cctx->sensors_pdr, "tms/servreg",
++				 "msm/adsp/sensor_pd");
++	if (IS_ERR(service)) {
++		err = PTR_ERR(service);
++		pdr_handle_release(cctx->sensors_pdr);
++		cctx->sensors_pdr = NULL;
++		return dev_err_probe(dev, err,
++				     "failed to add sensor_pd PDR lookup\n");
++	}
++
++	dev_info(dev, "tracking msm/adsp/sensor_pd with PDR\n");
++
++	return 0;
++}
++
+ static int fastrpc_release_current_dsp_process(struct fastrpc_user *fl)
+ {
+ 	struct fastrpc_invoke_args args[1];
+@@ -1627,7 +1920,8 @@
+ 	struct fastrpc_channel_ctx *cctx = fl->cctx;
+ 	unsigned long flags;
+ 
+-	fastrpc_release_current_dsp_process(fl);
++	if (fl->sctx)
++		fastrpc_release_current_dsp_process(fl);
+ 
+ 	spin_lock_irqsave(&cctx->lock, flags);
+ 	list_del(&fl->user);
+@@ -1668,15 +1962,6 @@
+ 	fl->cctx = cctx;
+ 	fl->is_secure_dev = fdevice->secure;
+ 
+-	fl->sctx = fastrpc_session_alloc(fl);
+-	if (!fl->sctx) {
+-		dev_err(&cctx->rpdev->dev, "No session available\n");
+-		mutex_destroy(&fl->mutex);
+-		kfree(fl);
+-
+-		return -EBUSY;
+-	}
+-
+ 	spin_lock_irqsave(&cctx->lock, flags);
+ 	list_add_tail(&fl->user, &cctx->users);
+ 	spin_unlock_irqrestore(&cctx->lock, flags);
+@@ -2160,6 +2445,207 @@
+ 	return err;
+ }
+ 
++static int fastrpc_legacy_invoke(struct fastrpc_user *fl,
++				 unsigned int cmd, char __user *argp)
++{
++	struct fastrpc_legacy_remote_arg *legacy_args = NULL;
++	struct fastrpc_invoke_args *args = NULL;
++	struct fastrpc_invoke inv;
++	u32 *attrs = NULL;
++	s32 *fds = NULL;
++	u64 attrs_ptr = 0;
++	u64 fds_ptr = 0;
++	u32 nbufs;
++	u32 nscalars;
++	int err = 0;
++	u32 i;
++
++	switch (cmd) {
++	case FASTRPC_LEGACY_IOCTL_INVOKE:
++		if (copy_from_user(&inv, argp, sizeof(inv)))
++			return -EFAULT;
++		break;
++	case FASTRPC_LEGACY_IOCTL_INVOKE_FD: {
++		struct fastrpc_legacy_invoke_fd invoke;
++
++		if (copy_from_user(&invoke, argp, sizeof(invoke)))
++			return -EFAULT;
++		inv = invoke.inv;
++		fds_ptr = invoke.fds;
++		break;
++	}
++	case FASTRPC_LEGACY_IOCTL_INVOKE_ATTRS: {
++		struct fastrpc_legacy_invoke_attrs invoke;
++
++		if (copy_from_user(&invoke, argp, sizeof(invoke)))
++			return -EFAULT;
++		inv = invoke.inv;
++		fds_ptr = invoke.fds;
++		attrs_ptr = invoke.attrs;
++		break;
++	}
++	case FASTRPC_LEGACY_IOCTL_INVOKE_CRC: {
++		struct fastrpc_legacy_invoke_crc invoke;
++
++		if (copy_from_user(&invoke, argp, sizeof(invoke)))
++			return -EFAULT;
++		inv = invoke.inv;
++		fds_ptr = invoke.fds;
++		attrs_ptr = invoke.attrs;
++		break;
++	}
++	default:
++		return -ENOTTY;
++	}
++
++	nscalars = REMOTE_SCALARS_LENGTH(inv.sc);
++	if (!nscalars)
++		return fastrpc_internal_invoke(fl, false, inv.handle,
++					      inv.sc, NULL);
++
++	legacy_args = memdup_user(u64_to_user_ptr(inv.args),
++				  array_size(nscalars, sizeof(*legacy_args)));
++	if (IS_ERR(legacy_args))
++		return PTR_ERR(legacy_args);
++
++	args = kcalloc(nscalars, sizeof(*args), GFP_KERNEL);
++	if (!args) {
++		err = -ENOMEM;
++		goto out;
++	}
++
++	if (fds_ptr) {
++		fds = memdup_user(u64_to_user_ptr(fds_ptr),
++				  array_size(nscalars, sizeof(*fds)));
++		if (IS_ERR(fds)) {
++			err = PTR_ERR(fds);
++			fds = NULL;
++			goto out;
++		}
++	}
++
++	if (attrs_ptr) {
++		attrs = memdup_user(u64_to_user_ptr(attrs_ptr),
++				    array_size(nscalars, sizeof(*attrs)));
++		if (IS_ERR(attrs)) {
++			err = PTR_ERR(attrs);
++			attrs = NULL;
++			goto out;
++		}
++	}
++
++	nbufs = REMOTE_SCALARS_INBUFS(inv.sc) +
++		REMOTE_SCALARS_OUTBUFS(inv.sc);
++	for (i = 0; i < nscalars; i++) {
++		if (i < nbufs) {
++			args[i].ptr = legacy_args[i].buf.ptr;
++			args[i].length = legacy_args[i].buf.length;
++			args[i].fd = fds ? fds[i] : -1;
++		} else {
++			args[i].ptr = legacy_args[i].dma.offset;
++			args[i].length = legacy_args[i].dma.length;
++			args[i].fd = fds ? fds[i] :
++				legacy_args[i].dma.fd;
++		}
++		args[i].attr = attrs ? attrs[i] : 0;
++	}
++
++	err = fastrpc_internal_invoke(fl, false, inv.handle, inv.sc, args);
++
++out:
++	kfree(attrs);
++	kfree(fds);
++	kfree(args);
++	kfree(legacy_args);
++
++	return err;
++}
++
++static int fastrpc_legacy_init(struct fastrpc_user *fl, char __user *argp)
++{
++	struct fastrpc_legacy_init init;
++	u32 pd_type;
++	int pd;
++	int err;
++
++	if (copy_from_user(&init, argp, sizeof(init)))
++		return -EFAULT;
++
++	switch (init.flags) {
++	case FASTRPC_LEGACY_INIT_ATTACH:
++		pd_type = FASTRPC_PD_TYPE_ROOT;
++		pd = ROOT_PD;
++		break;
++	case FASTRPC_LEGACY_INIT_ATTACH_SENSORS:
++		pd_type = FASTRPC_PD_TYPE_SENSORS;
++		pd = SENSORS_PD;
++		break;
++	default:
++		return -EOPNOTSUPP;
++	}
++
++	err = fastrpc_session_select(fl, pd_type);
++	if (err)
++		return err;
++
++	return fastrpc_init_attach(fl, pd);
++}
++
++static long fastrpc_legacy_device_ioctl(struct fastrpc_user *fl,
++					unsigned int cmd, char __user *argp)
++{
++	u32 info;
++	int err;
++
++	switch (cmd) {
++	case FASTRPC_LEGACY_IOCTL_GETINFO:
++		if (copy_from_user(&info, argp, sizeof(info)))
++			return -EFAULT;
++		if (info != ADSP_DOMAIN_ID)
++			return -EINVAL;
++		info = 1;
++		return copy_to_user(argp, &info, sizeof(info)) ?
++			-EFAULT : 0;
++	case FASTRPC_LEGACY_IOCTL_SET_SESSION_INFO:
++		/*
++		 * The upstream device node already identifies the domain and
++		 * session selection is driven by the subsequent INIT command.
++		 */
++		return 0;
++	case FASTRPC_LEGACY_IOCTL_GET_DSP_INFO:
++		/*
++		 * These probes are optional hints.  Advertise no downstream-
++		 * only capability and let libadsprpc use its fallback paths.
++		 */
++		return put_user(0, (u32 __user *)(argp +
++				offsetof(struct fastrpc_legacy_capability,
++					 capability)));
++	case FASTRPC_LEGACY_IOCTL_INIT:
++		return fastrpc_legacy_init(fl, argp);
++	case FASTRPC_LEGACY_IOCTL_INVOKE:
++	case FASTRPC_LEGACY_IOCTL_INVOKE_FD:
++	case FASTRPC_LEGACY_IOCTL_INVOKE_ATTRS:
++	case FASTRPC_LEGACY_IOCTL_INVOKE_CRC:
++		err = fastrpc_wait_for_sensor_pd(fl);
++		if (err)
++			return err;
++		return fastrpc_legacy_invoke(fl, cmd, argp);
++	case FASTRPC_LEGACY_IOCTL_MMAP:
++	case FASTRPC_LEGACY_IOCTL_MMAP_64:
++		return fastrpc_req_mmap(fl, argp);
++	case FASTRPC_LEGACY_IOCTL_MUNMAP:
++	case FASTRPC_LEGACY_IOCTL_MUNMAP_64:
++		return fastrpc_req_munmap(fl, argp);
++	case FASTRPC_LEGACY_IOCTL_SETMODE:
++	case FASTRPC_LEGACY_IOCTL_CONTROL:
++		return 0;
++	default:
++		dev_dbg(&fl->cctx->rpdev->dev,
++			"unsupported legacy FastRPC ioctl %#x\n", cmd);
++		return -ENOTTY;
++	}
++}
++
+ static long fastrpc_device_ioctl(struct file *file, unsigned int cmd,
+ 				 unsigned long arg)
+ {
+@@ -2167,6 +2653,30 @@
+ 	char __user *argp = (char __user *)arg;
+ 	int err;
+ 
++	if (!READ_ONCE(fl->cctx->rpdev))
++		return -EPIPE;
++
++	if (cmd == FASTRPC_LEGACY_IOCTL_GETINFO ||
++	    cmd == FASTRPC_LEGACY_IOCTL_SET_SESSION_INFO ||
++	    cmd == FASTRPC_LEGACY_IOCTL_INIT)
++		fl->legacy_ioctl = true;
++
++	if (fl->legacy_ioctl)
++		return fastrpc_legacy_device_ioctl(fl, cmd, argp);
++
++	err = fastrpc_session_select(fl, fastrpc_ioctl_pd_type(cmd));
++	if (err) {
++		dev_err(&fl->cctx->rpdev->dev,
++			"No FastRPC session available\n");
++		return err;
++	}
++
++	if (!fastrpc_ioctl_is_init(cmd)) {
++		err = fastrpc_wait_for_sensor_pd(fl);
++		if (err)
++			return err;
++	}
++
+ 	switch (cmd) {
+ 	case FASTRPC_IOCTL_INVOKE:
+ 		err = fastrpc_invoke(fl, argp);
+@@ -2251,6 +2761,8 @@
+ 	if (of_property_read_u32(dev->of_node, "reg", &sess->sid))
+ 		dev_info(dev, "FastRPC Session ID not specified in DT\n");
+ 
++	of_property_read_u32(dev->of_node, "qcom,pd-type", &sess->pd_type);
++
+ 	if (sessions > 0) {
+ 		struct fastrpc_session_ctx *dup_sess;
+ 
+@@ -2462,11 +2974,17 @@
+ 	INIT_LIST_HEAD(&data->users);
+ 	INIT_LIST_HEAD(&data->invoke_interrupted_mmaps);
+ 	spin_lock_init(&data->lock);
++	init_waitqueue_head(&data->sensors_pd_waitq);
++	atomic_set(&data->sensors_pd_up, 0);
+ 	idr_init(&data->ctx_idr);
+ 	data->domain_id = domain_id;
+ 	data->rpdev = rpdev;
+ 	dev_set_drvdata(&rpdev->dev, data);
+ 
++	err = fastrpc_setup_sensor_pdr(data, rdev);
++	if (err)
++		goto err_deregister_fdev;
++
+ 	err = of_platform_populate(rdev->of_node, NULL, NULL, rdev);
+ 	if (err)
+ 		goto err_deregister_fdev;
+@@ -2474,6 +2992,7 @@
+ 	return 0;
+ 
+ err_deregister_fdev:
++	pdr_handle_release(data->sensors_pdr);
+ 	if (data->fdevice)
+ 		misc_deregister(&data->fdevice->miscdev);
+ 	if (data->secure_fdevice)
+@@ -2502,6 +3021,10 @@
+ 	struct fastrpc_buf *buf, *b;
+ 	struct fastrpc_user *user;
+ 	unsigned long flags;
++	int err;
++
++	pdr_handle_release(cctx->sensors_pdr);
++	cctx->sensors_pdr = NULL;
+ 
+ 	/* No invocations past this point */
+ 	spin_lock_irqsave(&cctx->lock, flags);
+@@ -2509,6 +3032,7 @@
+ 	list_for_each_entry(user, &cctx->users, user)
+ 		fastrpc_notify_users(user);
+ 	spin_unlock_irqrestore(&cctx->lock, flags);
++	wake_up_interruptible(&cctx->sensors_pd_waitq);
+ 
+ 	if (cctx->fdevice)
+ 		misc_deregister(&cctx->fdevice->miscdev);
+@@ -2519,8 +3043,13 @@
+ 	list_for_each_entry_safe(buf, b, &cctx->invoke_interrupted_mmaps, node)
+ 		list_del(&buf->node);
+ 
+-	if (cctx->remote_heap)
+-		fastrpc_buf_free(cctx->remote_heap);
++	if (cctx->remote_heap) {
++		err = fastrpc_remote_heap_unassign(cctx, &rpdev->dev);
++		if (!err) {
++			fastrpc_buf_free(cctx->remote_heap);
++			cctx->remote_heap = NULL;
++		}
++	}
+ 
+ 	of_platform_depopulate(&rpdev->dev);
+ 

@@ -1,0 +1,187 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="12.0" DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props" Condition="Exists('$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props')" />
+  <PropertyGroup>
+    <ProjectGuid>{3B7009FA-0B09-4F27-8126-0885E66A5679}</ProjectGuid>
+    <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
+    <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
+    <OutputType>WinExe</OutputType>
+    <AssemblyName>ReShade Setup</AssemblyName>
+    <ApplicationIcon>..\res\main_icon.ico</ApplicationIcon>
+    <OutputPath>$(SolutionDir)\bin\$(Platform)\$(Configuration)\</OutputPath>
+    <IntermediateOutputPath>$(SolutionDir)\intermediate\$(AssemblyName)\$(Platform)\$(Configuration)\</IntermediateOutputPath>
+    <AppDesignerFolder>Properties</AppDesignerFolder>
+    <RootNamespace>ReShade.Setup</RootNamespace>
+    <TargetFrameworkVersion>v4.6.2</TargetFrameworkVersion>
+    <FileAlignment>512</FileAlignment>
+    <ApplicationManifest>Properties\Assembly.manifest</ApplicationManifest>
+    <WarningLevel>4</WarningLevel>
+    <TargetFrameworkProfile />
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)' == 'Debug|AnyCPU'">
+    <PlatformTarget>AnyCPU</PlatformTarget>
+    <DebugSymbols>true</DebugSymbols>
+    <DebugType>full</DebugType>
+    <Optimize>false</Optimize>
+    <DefineConstants>DEBUG;TRACE;RESHADE_ADDON</DefineConstants>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <UseVSHostingProcess>true</UseVSHostingProcess>
+    <Prefer32Bit>false</Prefer32Bit>
+    <LangVersion>7.3</LangVersion>
+    <NoWarn>1633</NoWarn>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)' == 'Release|AnyCPU'">
+    <PlatformTarget>AnyCPU</PlatformTarget>
+    <DebugType>none</DebugType>
+    <Optimize>true</Optimize>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <UseVSHostingProcess>false</UseVSHostingProcess>
+    <Prefer32Bit>false</Prefer32Bit>
+    <LangVersion>7.3</LangVersion>
+    <NoWarn>1633</NoWarn>
+    <DefineConstants>RESHADE_ADDON</DefineConstants>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)' == 'Release Signed|AnyCPU'">
+    <PlatformTarget>AnyCPU</PlatformTarget>
+    <DebugType>none</DebugType>
+    <Optimize>true</Optimize>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <UseVSHostingProcess>false</UseVSHostingProcess>
+    <Prefer32Bit>false</Prefer32Bit>
+    <LangVersion>7.3</LangVersion>
+    <NoWarn>1633</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="PresentationCore" />
+    <Reference Include="PresentationFramework" />
+    <Reference Include="System" />
+    <Reference Include="System.Configuration" />
+    <Reference Include="System.Drawing" />
+    <Reference Include="System.IO.Compression" />
+    <Reference Include="System.IO.Compression.FileSystem" />
+    <Reference Include="System.Xaml" />
+    <Reference Include="System.XML" />
+    <Reference Include="WindowsBase" />
+  </ItemGroup>
+  <ItemGroup>
+    <ApplicationDefinition Include="Properties\App.xaml">
+      <Generator>MSBuild:Compile</Generator>
+      <SubType>Designer</SubType>
+    </ApplicationDefinition>
+    <Compile Include="Pages\SelectAddonsPage.xaml.cs">
+      <DependentUpon>SelectAddonsPage.xaml</DependentUpon>
+    </Compile>
+    <Compile Include="Utilities\AeroGlass.cs" />
+    <Compile Include="Utilities\FileOpenDialog.cs" />
+    <Compile Include="Utilities\IniFile.cs" />
+    <Compile Include="Utilities\PEInfo.cs" />
+    <Page Include="Pages\SelectAddonsPage.xaml">
+      <SubType>Designer</SubType>
+      <Generator>MSBuild:Compile</Generator>
+    </Page>
+    <Page Include="Pages\SelectApiPage.xaml">
+      <SubType>Designer</SubType>
+      <Generator>MSBuild:Compile</Generator>
+    </Page>
+    <Compile Include="Pages\SelectApiPage.xaml.cs">
+      <DependentUpon>SelectApiPage.xaml</DependentUpon>
+    </Compile>
+    <Page Include="Pages\SelectAppPage.xaml">
+      <SubType>Designer</SubType>
+      <Generator>MSBuild:Compile</Generator>
+    </Page>
+    <Compile Include="Pages\SelectAppPage.xaml.cs">
+      <DependentUpon>SelectAppPage.xaml</DependentUpon>
+    </Compile>
+    <Page Include="Pages\SelectEffectsPage.xaml">
+      <SubType>Designer</SubType>
+      <Generator>MSBuild:Compile</Generator>
+    </Page>
+    <Compile Include="Pages\SelectEffectsPage.xaml.cs">
+      <DependentUpon>SelectEffectsPage.xaml</DependentUpon>
+    </Compile>
+    <Page Include="Pages\SelectOperationPage.xaml">
+      <SubType>Designer</SubType>
+      <Generator>MSBuild:Compile</Generator>
+    </Page>
+    <Compile Include="Pages\SelectOperationPage.xaml.cs">
+      <DependentUpon>SelectOperationPage.xaml</DependentUpon>
+    </Compile>
+    <Page Include="Pages\StatusPage.xaml">
+      <SubType>Designer</SubType>
+      <Generator>MSBuild:Compile</Generator>
+    </Page>
+    <Compile Include="Pages\StatusPage.xaml.cs">
+      <DependentUpon>StatusPage.xaml</DependentUpon>
+    </Compile>
+    <Page Include="MainWindow.xaml">
+      <SubType>Designer</SubType>
+      <Generator>MSBuild:Compile</Generator>
+    </Page>
+    <Compile Include="MainWindow.xaml.cs">
+      <DependentUpon>MainWindow.xaml</DependentUpon>
+    </Compile>
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="$(IntermediateOutputPath)Properties\AssemblyInfo.cs">
+      <SubType>Code</SubType>
+    </Compile>
+    <AppDesigner Include="Properties\" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="Properties\App.config">
+      <SubType>Designer</SubType>
+    </None>
+    <None Include="Properties\Assembly.manifest">
+      <SubType>Designer</SubType>
+    </None>
+    <None Include="Properties\AssemblyInfo.cs.in" />
+  </ItemGroup>
+  <ItemGroup>
+    <Archive Include="ReShade32.json" />
+    <Archive Include="ReShade32_XR.json" />
+    <Archive Include="ReShade64.json" />
+    <Archive Include="ReShade64_XR.json" />
+  </ItemGroup>
+  <ItemGroup>
+    <Resource Include="Pages\Resources\DirectX.png">
+      <Localizable>false</Localizable>
+    </Resource>
+    <Resource Include="Pages\Resources\OpenGL.png">
+      <Localizable>false</Localizable>
+    </Resource>
+    <Resource Include="Pages\Resources\OpenXR.png">
+      <Localizable>false</Localizable>
+    </Resource>
+    <Resource Include="Pages\Resources\Vulkan.png">
+      <Localizable>false</Localizable>
+    </Resource>
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.WindowsSDK.props" />
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Common.props" />
+  <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+  <!-- Update assembly info file -->
+  <UsingTask TaskName="CL" AssemblyFile="$(VCTargetsPath)Microsoft.Build.CppTasks.Common.dll" />
+  <Target Name="GenerateAssemblyInfo" BeforeTargets="BeforeBuild" Inputs="..\res\version.h;Properties\AssemblyInfo.cs.in" Outputs="$(IntermediateOutputPath)Properties\AssemblyInfo.cs">
+    <Message Text="Generating assembly version ..." Importance="high" />
+    <MakeDir Directories="$(IntermediateOutputPath)Properties" />
+    <CL SuppressStartupBanner="true" PreprocessSuppressLineNumbers="true" PreprocessKeepComments="true" PreprocessToFile="true" PreprocessorDefinitions="BUILD_CONFIGURATION=$(Configuration)" AdditionalIncludeDirectories="..\res" Sources="Properties\AssemblyInfo.cs.in" PreprocessOutputPath="$(IntermediateOutputPath)Properties\AssemblyInfo.cs" ToolPath="$(VC_ExecutablePath_x86)" />
+  </Target>
+  <!-- Archive ReShade binaries and append them to the setup executable -->
+  <Target Name="BuildAndAppendSetupArchive" AfterTargets="CopyFilesToOutputDirectory">
+    <Message Text="Compressing ReShade DLLs ..." Importance="high" />
+    <ItemGroup>
+      <Archive Include="$(SolutionDir)bin\*\$(Configuration)\ReShade*.dll" />
+    </ItemGroup>
+    <Exec Command="$(SolutionDir)tools\7za.exe a -y &quot;$(TargetPath).zip&quot; &quot;@(Archive, '&quot; &quot;')&quot;" />
+    <Message Text="Appending archive to setup executable ..." Importance="high" />
+    <Exec Command="copy /b &quot;$(TargetPath)&quot; + &quot;$(TargetPath).zip&quot; &quot;$(TargetPath)&quot;" EchoOff="true" />
+    <Delete Files="$(TargetPath).zip" />
+  </Target>
+  <PropertyGroup>
+    <PostBuildEvent Condition="('$(Configuration)'=='Release' Or '$(Configuration)'=='Release Signed') and Exists('$(SolutionDir)\res\sign.pfx')">echo Signing executable ...
+set PATH=%PATH%;$(WindowsSDK_ExecutablePath)
+signtool.exe sign /f "$(SolutionDir)\res\sign.pfx" /fd sha1 /t http://timestamp.digicert.com "$(TargetPath)"</PostBuildEvent>
+    <RunPostBuildEvent>OnBuildSuccess</RunPostBuildEvent>
+  </PropertyGroup>
+</Project>

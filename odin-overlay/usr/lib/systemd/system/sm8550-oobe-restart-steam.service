@@ -1,0 +1,8 @@
+[Unit]
+Description=Restart Steam after first-boot OOBE update step
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/steamos/sm8550-oobe-restart-steam
+Nice=0

@@ -1,0 +1,15 @@
+# Semi-final kernel target — copy to config/local.conf (gitignored).
+# Stable latest from https://kernel.org/ (2026-08-28): 7.2.2
+
+KERNEL_VER=7.2.2
+PREFERRED_KERNEL_SERIES=7.2
+BUILD_COMPILE=1
+PATCH_POLICY=strict
+
+# PC build host without /boot/KERNEL: skip UUID preflight (image build embeds it).
+# On device: auto-reads root=UUID= from /boot/KERNEL (sudo if /boot is root-only).
+# PREFLIGHT_SKIP_ROOT_UUID=1
+
+# Keep SM8550 gaming defaults from defaults.conf:
+# PATCH_SKIP skips GPU ACD + interconnect QoS (GMU stability on 7.0 — re-test on 7.2)
+# CMDLINE_QUIET=1, SUSPEND_DEEP=1, DEVICE_TARGET=all

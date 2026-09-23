@@ -1,0 +1,54 @@
+version = 1
+
+[global]
+# Currently selected profile
+current_profile = "decky-lsfg-vk"
+
+# specify where Lossless.dll is stored
+dll = "/home/steam/.local/share/Steam/steamapps/common/Lossless Scaling/Lossless.dll"
+
+# FP16 acceleration
+no_fp16 = false
+
+[[game]]
+# Plugin-managed game entry (default profile)
+exe = "decky-lsfg-vk"
+
+# change the fps multiplier
+multiplier = 2
+
+# change the flow scale
+flow_scale = 0.8
+
+# use a lighter model for FG (recommended for most games)
+performance_mode = true
+
+# enable HDR mode (only for games that support HDR)
+hdr_mode = false
+
+# override Vulkan present mode (may cause crashes)
+experimental_present_mode = "mailbox"
+
+# base framerate cap for DirectX games before frame multiplier
+dxvk_frame_rate = 0
+
+# enable PROTON_USE_WOW64=1 for 32-bit games (use with ProtonGE to fix crashing)
+enable_wow64 = false
+
+# disable Steam Deck mode (unlocks hidden settings in some games)
+disable_steamdeck_mode = false
+
+# Enables a transparent mangohud overlay, sometimes fixes issues with 2X multiplier in game mode
+mangohud_workaround = false
+
+# Disables vkBasalt layer which can conflict with LSFG (Reshade, some Decky plugins)
+disable_vkbasalt = false
+
+# Force vkBasalt to engage to fix framepacing issues in gamemode
+force_enable_vkbasalt = false
+
+# Enable Gamescope WSI Layer, disable if frame generation isn't applying or isn't feeling smooth (use with HDR off)
+enable_wsi = false
+
+# Enable Zink (Vulkan-based OpenGL implementation) for OpenGL games
+enable_zink = false

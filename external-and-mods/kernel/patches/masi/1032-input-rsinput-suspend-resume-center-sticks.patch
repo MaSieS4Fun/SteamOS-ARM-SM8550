@@ -1,0 +1,72 @@
+--- a/drivers/input/joystick/rsinput.c	2026-08-13 17:22:48.850220882 +0200
++++ b/drivers/input/joystick/rsinput.c	2026-08-13 19:55:00.787474351 +0200
+@@ -535,9 +535,10 @@
+         input_set_capability(drv->input, EV_KEY, keymap[i]);
+ 
+     __set_bit(EV_ABS, drv->input->evbit);
++    /* flat ≈ deadzone at rest (helps post-resume drift / noisy center) */
+     for (int i = ABS_X; i <= ABS_RZ; i++)
+         input_set_abs_params(drv->input, i, -0x580, 0x580,
+-                     0, 0);
++                     24, 96);
+ 
+     input_set_abs_params(drv->input, ABS_Z, 0, 1830, 0, 30);
+     input_set_abs_params(drv->input, ABS_RZ, 0, 1830, 0, 30);
+@@ -583,6 +584,49 @@
+     regulator_disable(drv->vdd);
+ }
+ 
++
++static void rsinput_report_sticks_centered(struct rsinput_driver *drv)
++{
++	if (!drv || !drv->input)
++		return;
++	input_report_abs(drv->input, ABS_X, 0);
++	input_report_abs(drv->input, ABS_Y, 0);
++	input_report_abs(drv->input, ABS_RX, 0);
++	input_report_abs(drv->input, ABS_RY, 0);
++	input_report_abs(drv->input, ABS_Z, 0);
++	input_report_abs(drv->input, ABS_RZ, 0);
++	input_sync(drv->input);
++}
++
++static int rsinput_suspend(struct device *dev)
++{
++	struct rsinput_driver *drv = dev_get_drvdata(dev);
++
++	rsinput_rumble_cancel(NULL);
++	rsinput_report_sticks_centered(drv);
++	return 0;
++}
++
++static int rsinput_resume(struct device *dev)
++{
++	struct rsinput_driver *drv = dev_get_drvdata(dev);
++	int error;
++
++	if (!drv)
++		return 0;
++
++	/* MCU often needs a beat after rails return before UART commands stick. */
++	msleep(80);
++	error = rsinput_init_commands(drv);
++	if (error)
++		dev_warn(dev, "rsinput resume init failed: %d\n", error);
++
++	rsinput_report_sticks_centered(drv);
++	return 0;
++}
++
++static DEFINE_SIMPLE_DEV_PM_OPS(rsinput_pm_ops, rsinput_suspend, rsinput_resume);
++
+ static const struct of_device_id rsinput_of_match[] = {
+     { .compatible = "gamepad,rsinput" },
+     { /* sentinel */ }
+@@ -594,6 +638,7 @@
+     .remove = rsinput_remove,
+     .driver = {
+         .name = "rsinput",
++        .pm = pm_ptr(&rsinput_pm_ops),
+         .of_match_table = rsinput_of_match,
+     },
+ };

@@ -1,0 +1,41 @@
+name: Build source tars
+on:
+  workflow_dispatch:
+  release:
+    types: [published]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v3
+      - name: Run build-source.sh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -x
+          sudo apt update
+          source ./build_deps.sh
+          DEPS_NO_I386="$(printf '%s' "$DEPS_DEBIAN" \
+            | tr ',' '\n' \
+            | grep -v ':i386' \
+            | tr '\n' ' ')"
+          sudo apt -o Acquire::Queue-Mode=access -y install \
+            $DEPS_NO_I386 \
+            hub
+          ./build-source.sh
+          assets=()
+          for asset in ./MangoHud-*-Source*.tar.*; do
+            assets+=("-a" "$asset")
+          done
+          tag_name="${GITHUB_REF##*/}"
+          hub release edit "${assets[@]}" -m "" "$tag_name"
+          #hub release create "${assets[@]}" -m "$tag_name" "$tag_name"
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        continue-on-error: true
+        with:
+          name: MangoHud-${{steps.git-vars.outputs.artifact-metadata}}
+          path: ${{runner.workspace}}/MangoHud/build/MangoHud-*tar.gz
+          retention-days: 30

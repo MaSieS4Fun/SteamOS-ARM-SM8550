@@ -1,0 +1,3 @@
+# Native AYN Odin2 Gamepad (kernel rsinput) — Xbox layout for SDL2 / emulators.
+# rsinput already negates stick axes; do not add SDL '-' on lefty/righty.
+0300b605202000000130000001000000822412289,AYN Odin2 Gamepad,platform:Linux,a:b0,b:b1,x:b3,y:b2,back:b6,start:b7,guide:b8,leftshoulder:b4,rightshoulder:b5,leftstick:b9,rightstick:b10,leftx:a0,lefty:a1,rightx:a3,righty:a4,lefttrigger:a2,righttrigger:a5,dpup:b11,dpleft:b13,dpdown:b12,dpright:b14,

@@ -1,0 +1,37 @@
+#!/bin/sh
+
+LOG="/userdata/system/logs/qcom-motion-calibrator.log"
+SERVICE="${QCOM_MOTION_SERVICE:-/etc/init.d/S29qcom-motion}"
+APP="${QCOM_MOTION_APP:-/usr/share/batocera/qcom-motion/motion-calibrator.py}"
+
+mkdir -p "$(dirname "${LOG}")"
+
+if tr '\000' '\n' < /proc/device-tree/compatible 2>/dev/null | grep -qx "ayn,thor"; then
+	profile="thor"
+	device_name="AYN Thor"
+elif tr '\000' '\n' < /proc/device-tree/compatible 2>/dev/null | grep -qx "ayn,odin2"; then
+	profile="odin2"
+	device_name="AYN Odin 2"
+else
+	echo "Motion calibration is available only on a supported AYN device" >> "${LOG}"
+	batocera-flash-screen 5 "#ffffff" "Supported AYN motion sensor not found." 20 >/dev/null 2>&1 || true
+	exit 1
+fi
+
+export QCOM_MOTION_PROFILE="${QCOM_MOTION_PROFILE:-${profile}}"
+export QCOM_MOTION_DEVICE_NAME="${QCOM_MOTION_DEVICE_NAME:-${device_name}}"
+export QCOM_MOTION_CALIBRATION_FILE="${QCOM_MOTION_CALIBRATION_FILE:-/userdata/system/qcom-sensors/${profile}/motion-calibration.ini}"
+export HOME="/userdata/system"
+export XDG_DATA_HOME="${HOME}/.local/share"
+export XDG_CONFIG_HOME="${HOME}/.config"
+export XDG_CACHE_HOME="${HOME}/.cache"
+export PYTHONDONTWRITEBYTECODE=1
+
+if [ -z "${WAYLAND_DISPLAY:-}" ] && [ -z "${DISPLAY:-}" ] && command -v getLocalXDisplay >/dev/null 2>&1; then
+	export DISPLAY="$(getLocalXDisplay)"
+fi
+
+status=0
+python3 "${APP}" >> "${LOG}" 2>&1 || status=$?
+"${SERVICE}" start >/dev/null 2>&1 || true
+exit "${status}"

@@ -1,0 +1,29 @@
+#!/bin/bash
+# After OOBE Wi-Fi, Steam sits on "Actualizando: calculando el tiempo restante".
+# Restart the user steam.service so Game Mode comes back at the login screen.
+# pkill is not enough: steam.service.d sets Restart=on-failure, so a SIGTERM
+# looks like a clean stop and Steam stays dead.
+set -u
+STEAM_HOME="${STEAM_HOME:-/home/steamos}"
+
+sleep 2
+if [[ -x /usr/bin/steamos-update ]]; then
+  STEAM_HOME="$STEAM_HOME" /usr/bin/steamos-update --mark-oobe-only >/dev/null 2>&1 || true
+fi
+
+if [[ "$(id -u)" -eq 0 ]]; then
+  if systemctl --user -M steamos@ restart steam.service 2>/dev/null; then
+    exit 0
+  fi
+  if [[ -d /run/user/1000 ]]; then
+    XDG_RUNTIME_DIR=/run/user/1000 \
+      systemctl --user restart steam.service 2>/dev/null && exit 0
+  fi
+else
+  systemctl --user restart steam.service 2>/dev/null && exit 0
+fi
+
+# Last resort: SIGKILL is an abnormal exit, so on-failure will respawn.
+pkill -KILL -u steamos -f 'steamrtarm64/steam' 2>/dev/null || true
+pkill -KILL -u steamos -f 'select_steam.sh' 2>/dev/null || true
+exit 0

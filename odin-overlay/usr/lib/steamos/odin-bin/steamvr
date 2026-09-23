@@ -1,0 +1,4 @@
+#!/bin/bash
+# Handheld stub: Frame steam-health-check and RUNSTEAM call `steamvr`.
+# Do not talk to OpenVR on SM8550.
+exit 0

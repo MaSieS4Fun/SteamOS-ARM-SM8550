@@ -1,0 +1,55 @@
+#!/bin/bash
+# Dump boot evidence to the home partition (survives force-poweroff).
+set -u
+TAG="${1:-early}"
+STAMP="$(date -Iseconds 2>/dev/null || echo unknown)"
+OUT_HOME="/home/steamos/BOOT-DEBUG-${TAG}.txt"
+OUT_ROOT="/var/log/sm8550-boot-debug-${TAG}.txt"
+mkdir -p /home/steamos /var/log 2>/dev/null || true
+
+dump() {
+  local f="$1"
+  {
+    echo "===== sm8550 boot debug (${TAG}) ${STAMP} ====="
+    echo "uname: $(uname -a 2>/dev/null || true)"
+    echo
+    echo "----- cmdline -----"
+    cat /proc/cmdline 2>/dev/null || true
+    echo
+    echo "----- failed units -----"
+    systemctl --failed --no-pager 2>/dev/null || true
+    echo
+    echo "----- display / seat -----"
+    systemctl is-active sddm.service gamescope-session.service 2>/dev/null || true
+    loginctl 2>/dev/null || true
+    echo
+    echo "----- drm -----"
+    ls -l /sys/class/drm 2>/dev/null || true
+    for c in /sys/class/drm/card*-*; do
+      [[ -e "$c/status" ]] || continue
+      echo "$(basename "$c") status=$(cat "$c/status" 2>/dev/null) modes=$(head -1 "$c/modes" 2>/dev/null)"
+    done
+    echo
+    echo "----- backlight -----"
+    ls -l /sys/class/backlight 2>/dev/null || true
+    echo
+    echo "----- modules -----"
+    ls -ld /lib/modules /usr/lib/modules /lib/modules/"$(uname -r)" 2>/dev/null || true
+    echo
+    echo "----- dmesg (last 200) -----"
+    dmesg -T 2>/dev/null | tail -n 200 || true
+    echo
+    echo "----- journal errors -----"
+    journalctl -b -p err --no-pager -n 120 2>/dev/null || true
+    echo
+    echo "----- journal sddm/gamescope -----"
+    journalctl -b -u sddm --no-pager -n 80 2>/dev/null || true
+    journalctl -b --user-unit gamescope-session.service --no-pager -n 80 2>/dev/null || true
+  } >"$f" 2>&1
+}
+
+dump "$OUT_ROOT"
+dump "$OUT_HOME"
+chown 1000:1000 "$OUT_HOME" 2>/dev/null || true
+chmod 0644 "$OUT_HOME" "$OUT_ROOT" 2>/dev/null || true
+echo "wrote $OUT_HOME and $OUT_ROOT"

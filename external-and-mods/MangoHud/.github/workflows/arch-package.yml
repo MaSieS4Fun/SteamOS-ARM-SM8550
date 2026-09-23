@@ -1,0 +1,44 @@
+name: arch package
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-arch-pkg:
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:latest
+    steps:
+      - name: set git global safe directory
+        run: |
+          pacman -Syu git --noconfirm
+          git config --global --add safe.directory $(realpath .)
+      - uses: actions/checkout@v3
+      - name: Install prerequisites
+        run: |
+          echo "ParallelDownloads = 10" >> /etc/pacman.conf
+          echo "\n" && echo "[multilib]" >> /etc/pacman.conf
+          echo "Include = /etc/pacman.d/mirrorlist" >> /etc/pacman.conf
+          pacman -Syu base-devel sudo meson python-mako glslang hub python-numpy python-matplotlib --noconfirm
+      - name: makepkg
+        run: |
+          useradd -m builduser
+          echo "builduser ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/builduser
+          chmod 0440 /etc/sudoers.d/builduser
+          chown -R builduser:builduser pkgbuild
+          cd pkgbuild
+          pkgver=$(git describe --tags | sed -r 's/^v//;s/([^-]*-g)/r\1/;s/-/./g')
+          sed -i "s/pkgver=.*/pkgver=$pkgver/g" PKGBUILD
+          sudo -u builduser -- sh -c "makepkg -fsCc --noconfirm"
+      - name: Edit release and add files
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -x
+          assets=()
+          for pkg in ./pkgbuild/*mangohud*.tar.zst;
+            do echo $pkg;
+            assets+=("-a" "$pkg")
+          done;
+          tag_name="${GITHUB_REF##*/}"
+          hub release edit "${assets[@]}" -m "" "$tag_name"

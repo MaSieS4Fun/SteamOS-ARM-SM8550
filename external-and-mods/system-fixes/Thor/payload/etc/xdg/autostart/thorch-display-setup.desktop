@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Thorch display layout (AYN Thor)
+Exec=/usr/bin/thorch-display-setup
+OnlyShowIn=KDE;
+NoDisplay=true
+X-KDE-autostart-phase=1

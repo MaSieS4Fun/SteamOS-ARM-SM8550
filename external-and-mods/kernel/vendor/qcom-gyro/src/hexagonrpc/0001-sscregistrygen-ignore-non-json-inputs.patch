@@ -1,0 +1,28 @@
+From d82d696b0a78035a5c5aabf36f86b86abfb895b9 Mon Sep 17 00:00:00 2001
+From: suckbluefrog <suckbluefrog@proton.me>
+Date: Fri, 10 Jul 2026 00:00:00 +000
+Subject: [PATCH] sscregistrygen: ignore non-JSON inputs safely
+
+Android sensor configuration directories contain json.lst alongside the JSON
+documents. json_object_from_fd() returns NULL for that list and the generator
+currently dereferences it. Skip unparsable entries.
+---
+ tools/sscregistrygen.c | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/tools/sscregistrygen.c b/tools/sscregistrygen.c
+index e93fb46..70b91fc 100644
+--- a/tools/sscregistrygen.c
++++ b/tools/sscregistrygen.c
+@@ -221,6 +221,9 @@
+ 
+ 	close(fd);
+ 
++	if (in == NULL)
++		return;
++
+ 	config = json_object_object_get(in, "config");
+ 	if (config != NULL) {
+ 		if (!check_config_filter(filter, config))
+-- 
+2.50.1

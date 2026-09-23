@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+export LC_ALL="${LC_ALL:-C.UTF-8}"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=${XDG_RUNTIME_DIR}/bus}"
+if [[ -z "${WAYLAND_DISPLAY:-}" && -S "${XDG_RUNTIME_DIR}/wayland-0" ]]; then
+	export WAYLAND_DISPLAY=wayland-0
+fi
+
+if [[ -z "${WAYLAND_DISPLAY:-}" ]]; then
+	exit 0
+fi
+
+apply_mapping_once() {
+	# KWin keys these identical controllers by event node, so map by stable bus path.
+	set_output_name /dev/input/by-path/platform-a90000.i2c-event DSI-2
+	set_output_name /dev/input/by-path/platform-98c000.i2c-event DSI-1
+}
+
+set_output_name() {
+	local by_path="$1"
+	local output="$2"
+	local event
+
+	event="$(readlink -f "${by_path}" 2>/dev/null || true)"
+	event="${event##*/}"
+	[[ "${event}" == event* ]] || return 0
+
+	qdbus6 org.kde.KWin "/org/kde/KWin/InputDevice/${event}" \
+		org.freedesktop.DBus.Properties.Set org.kde.KWin.InputDevice outputName "${output}" || true
+	qdbus6 org.kde.KWin "/org/kde/KWin/InputDevice/${event}" \
+		org.freedesktop.DBus.Properties.Set org.kde.KWin.InputDevice calibrationMatrix "1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1" || true
+	qdbus6 org.kde.KWin "/org/kde/KWin/InputDevice/${event}" \
+		org.freedesktop.DBus.Properties.Set org.kde.KWin.InputDevice rotation 0 || true
+	qdbus6 org.kde.KWin "/org/kde/KWin/InputDevice/${event}" \
+		org.freedesktop.DBus.Properties.Set org.kde.KWin.InputDevice orientationDBus 1 || true
+}
+
+kwin_ready() {
+	qdbus6 org.kde.KWin /org/kde/KWin/InputDevice org.kde.KWin.InputDeviceManager.ListTouch \
+		>/dev/null 2>&1
+}
+
+for _ in $(seq 1 40); do
+	kwin_ready && break
+	sleep 1
+done
+
+if [[ "${1:-}" == "--watch" ]]; then
+	while true; do
+		apply_mapping_once
+		sleep "${THORCH_TOUCH_MAP_INTERVAL:-2}"
+	done
+else
+	apply_mapping_once
+fi

@@ -1,0 +1,304 @@
+From a2376ac673fc64f052f20f0ba5a559304aa5d738 Mon Sep 17 00:00:00 2001
+From: suckbluefrog <suckbluefrog@proton.me>
+Date: Thu, 16 Jul 2026 00:00:00 +0000
+Subject: [PATCH] hexagonrpcd: enumerate virtual directories
+
+Qualcomm's registry loader enumerates both the virtual sensor configuration
+directory and the mapped persistent registry directory. HexagonFS only
+implemented readdir for mapped directories, so enumerating a virtual parent
+failed with ENOSYS and crashed SensorsPD.
+
+Give each virtual directory descriptor its own enumeration cursor, report
+the normal dot entries, and mark virtual directories with S_IFDIR.
+
+The Thor registry firmware also probes /../sns_reg_version. Android's
+persist layout resolves that to the version file adjacent to the generated
+registry directory. Expose the same observed root alias so the normalized
+callback path reaches the persistent version file.
+
+Add coverage for virtual directory enumeration, stat, and the parent-path
+alias.
+---
+ hexagonrpcd/hexagonfs_virt_dir.c | 48 ++++++++++++++++++++----
+ hexagonrpcd/rpcd_builder.c       | 11 +++++-
+ tests/meson.build                |  1 +
+ tests/test_hexagonfs.c           | 75 +++++++++++++++++++++++++++++++++++++
+ 4 files changed, 128 insertions(+), 7 deletions(-)
+
+diff --git a/hexagonrpcd/hexagonfs_virt_dir.c b/hexagonrpcd/hexagonfs_virt_dir.c
+index 83c21de..73fc068 100644
+--- a/hexagonrpcd/hexagonfs_virt_dir.c
++++ b/hexagonrpcd/hexagonfs_virt_dir.c
+@@ -28,6 +28,11 @@
+ 
+ #include "hexagonfs.h"
+ 
++struct virt_dir_ctx {
++	const struct hexagonfs_dirent *const *entries;
++	size_t index;
++};
++
+ static int virt_dir_openat_flags(struct hexagonfs_fd *dir,
+ 				 const char *segment,
+ 				 bool expect_dir,
+@@ -56,14 +61,15 @@ static const struct hexagonfs_dirent *walk_dir(const struct hexagonfs_dirent *co
+ 
+ static int virt_dir_from_dirent(const void *dirent_data, bool dir, void **fd_data)
+ {
+-	const struct hexagonfs_dirent *const **wrapper;
++	struct virt_dir_ctx *ctx;
+ 
+-	wrapper = malloc(sizeof(*wrapper));
+-	if (wrapper == NULL)
++	ctx = malloc(sizeof(*ctx));
++	if (ctx == NULL)
+ 		return -ENOMEM;
+ 
+-	*wrapper = dirent_data;
+-	*fd_data = wrapper;
++	ctx->entries = dirent_data;
++	ctx->index = 0;
++	*fd_data = ctx;
+ 
+ 	return 0;
+ }
+@@ -84,12 +90,12 @@ static int virt_dir_openat_flags(struct hexagonfs_fd *dir,
+ 				 mode_t mode,
+ 				 struct hexagonfs_fd **out)
+ {
+-	const struct hexagonfs_dirent *const **dirlist = dir->data;
++	struct virt_dir_ctx *ctx = dir->data;
+ 	const struct hexagonfs_dirent *ent;
+ 	struct hexagonfs_fd *fd;
+ 	int ret;
+ 
+-	ent = walk_dir(*dirlist, segment);
++	ent = walk_dir(ctx->entries, segment);
+ 	if (ent == NULL)
+ 		return -ENOENT;
+ 
+@@ -126,6 +132,36 @@ static void virt_dir_close(void *fd_data)
+ 	free(fd_data);
+ }
+ 
++static int virt_dir_readdir(struct hexagonfs_fd *fd, size_t size, char *out)
++{
++	struct virt_dir_ctx *ctx = fd->data;
++	const struct hexagonfs_dirent *ent;
++	const char *name;
++
++	if (size == 0)
++		return -EINVAL;
++
++	if (ctx->index == 0) {
++		name = ".";
++	} else if (ctx->index == 1) {
++		name = "..";
++	} else {
++		ent = ctx->entries[ctx->index - 2];
++		if (ent == NULL) {
++			out[0] = '\0';
++			return 0;
++		}
++
++		name = ent->name;
++	}
++
++	strncpy(out, name, size);
++	out[size - 1] = '\0';
++	ctx->index++;
++
++	return 0;
++}
++
+ static int virt_dir_stat(struct hexagonfs_fd *fd, struct stat *stats)
+ {
+ 	stats->st_size = 0;
+@@ -136,7 +172,8 @@ static int virt_dir_stat(struct hexagonfs_fd *fd, struct stat *stats)
+ 	stats->st_ino = 0;
+ 	stats->st_nlink = 0;
+ 
+-	stats->st_mode = S_IRUSR | S_IXUSR
++	stats->st_mode = S_IFDIR
++		       | S_IRUSR | S_IXUSR
+ 		       | S_IRGRP | S_IXGRP
+ 		       | S_IROTH | S_IXOTH;
+ 
+@@ -155,5 +192,6 @@ struct hexagonfs_file_ops hexagonfs_virt_dir_ops = {
+ 	.from_dirent = virt_dir_from_dirent,
+ 	.openat = virt_dir_openat,
+ 	.openat_flags = virt_dir_openat_flags,
++	.readdir = virt_dir_readdir,
+ 	.stat = virt_dir_stat,
+ };
+diff --git a/hexagonrpcd/rpcd_builder.c b/hexagonrpcd/rpcd_builder.c
+index 462da59..6fb8581 100644
+--- a/hexagonrpcd/rpcd_builder.c
++++ b/hexagonrpcd/rpcd_builder.c
+@@ -32,6 +32,7 @@
+ #define SENSORS_PERSIST		"/sensors/"
+ #define SENSORS_CAM_DUMP	"/sensors/cam_registry_dump.txt"
+ #define SNS_REG_CONFIG		"/sensors/sns_reg.conf"
++#define SNS_REG_VERSION		"/sensors/sns_reg_version"
+ #define SYSFS_SOCINFO		"/socinfo/"
+ 
+ static struct hexagonfs_dirent *hfs_mkdir(const char *name, size_t n_ents, ...)
+@@ -113,7 +114,7 @@ static struct hexagonfs_dirent *hfs_map_or_empty(const char *name, const char *p
+ struct hexagonfs_dirent *construct_root_dir(const char *prefix, const char *dsp)
+ {
+ 	char *acdbdata, *dsp_libs, *sns_cam_dump, *sns_cfg, *sns_persist,
+-	     *sns_reg_config, *socinfo;
++	     *sns_reg_config, *sns_reg_version, *socinfo;
+ 	size_t n_prefix;
+ 	struct hexagonfs_dirent *persist_dir, *vendor_dir;
+ 
+@@ -124,6 +125,7 @@ struct hexagonfs_dirent *construct_root_dir(const char *prefix, const char *dsp)
+ 	sns_persist = malloc(n_prefix + strlen(SENSORS_PERSIST) + 1);
+ 	sns_cam_dump = malloc(n_prefix + strlen(SENSORS_CAM_DUMP) + 1);
+ 	sns_reg_config = malloc(n_prefix + strlen(SNS_REG_CONFIG) + 1);
++	sns_reg_version = malloc(n_prefix + strlen(SNS_REG_VERSION) + 1);
+ 	socinfo = malloc(n_prefix + strlen(SYSFS_SOCINFO) + 1);
+ 
+ 	dsp_libs = malloc(n_prefix + strlen(DSP_LIBS) + strlen(dsp) + 1);
+@@ -153,6 +155,11 @@ struct hexagonfs_dirent *construct_root_dir(const char *prefix, const char *dsp)
+ 		strcat(sns_reg_config, SNS_REG_CONFIG);
+ 	}
+ 
++	if (sns_reg_version != NULL) {
++		strcpy(sns_reg_version, prefix);
++		strcat(sns_reg_version, SNS_REG_VERSION);
++	}
++
+ 	if (socinfo != NULL) {
+ 		strcpy(socinfo, prefix);
+ 		strcat(socinfo, SYSFS_SOCINFO);
+@@ -190,7 +197,7 @@ struct hexagonfs_dirent *construct_root_dir(const char *prefix, const char *dsp)
+ 				)
+ 			);
+ 
+-	return hfs_mkdir("/", 6,
++	return hfs_mkdir("/", 7,
+ 			hfs_mkdir("mnt", 1,
+ 				hfs_mkdir("vendor", 1,
+ 					persist_dir
+@@ -212,6 +219,7 @@ struct hexagonfs_dirent *construct_root_dir(const char *prefix, const char *dsp)
+ 					)
+ 				)
+ 			),
++			hfs_map("sns_reg_version", sns_reg_version),
+ 			vendor_dir
+ 		);
+ }
+diff --git a/tests/meson.build b/tests/meson.build
+index e7303c7..e26decd 100644
+--- a/tests/meson.build
++++ b/tests/meson.build
+@@ -20,6 +20,7 @@ test_hexagonfs = executable('test_hexagonfs',
+   'test_hexagonfs.c',
+   '../hexagonrpcd/hexagonfs.c',
+   '../hexagonrpcd/hexagonfs_mapped.c',
++  '../hexagonrpcd/hexagonfs_virt_dir.c',
+   c_args : cflags,
+   include_directories : include,
+ )
+diff --git a/tests/test_hexagonfs.c b/tests/test_hexagonfs.c
+index ae9ee7a..ebfebff 100644
+--- a/tests/test_hexagonfs.c
++++ b/tests/test_hexagonfs.c
+@@ -22,6 +22,7 @@
+ #include <fcntl.h>
+ #include <libhexagonrpc/fastrpc.h>
+ #include <stdbool.h>
++#include <sys/stat.h>
+ #include <string.h>
+ #include <unistd.h>
+ 
+@@ -83,6 +84,76 @@ static int test_mapped_seq_read(const char *path)
+ 	return 0;
+ }
+ 
++static int test_virtual_readdir_and_parent_alias(const char *path)
++{
++	struct hexagonfs_dirent file = {
++		.name = "sns_reg_version",
++		.ops = &hexagonfs_mapped_ops,
++		.u.phys = path,
++	};
++	struct hexagonfs_dirent other = {
++		.name = "other",
++		.ops = &hexagonfs_mapped_ops,
++		.u.phys = path,
++	};
++	struct hexagonfs_dirent *entries[] = {
++		&file,
++		&other,
++		NULL,
++	};
++	struct hexagonfs_dirent root = {
++		.name = "/",
++		.ops = &hexagonfs_virt_dir_ops,
++		.u.dir = entries,
++	};
++	struct hexagonfs_fd *fds[HEXAGONFS_MAX_FD] = { 0 };
++	const char *expected[] = {
++		".",
++		"..",
++		"sns_reg_version",
++		"other",
++		"",
++	};
++	struct stat stats;
++	char name[32];
++	char byte;
++	int aliasfd;
++	int rootfd;
++	int ret;
++	size_t i;
++
++	rootfd = hexagonfs_open_root(fds, &root);
++	if (rootfd < 0)
++		return 1;
++
++	ret = hexagonfs_fstat(fds, rootfd, &stats);
++	if (ret || !S_ISDIR(stats.st_mode))
++		return 1;
++
++	for (i = 0; i < sizeof(expected) / sizeof(expected[0]); i++) {
++		ret = hexagonfs_readdir(fds, rootfd, sizeof(name), name);
++		if (ret || strcmp(name, expected[i]))
++			return 1;
++	}
++
++	aliasfd = hexagonfs_openat(fds, rootfd, rootfd,
++				   "/../sns_reg_version");
++	if (aliasfd < 0)
++		return 1;
++
++	ret = hexagonfs_read(fds, aliasfd, sizeof(byte), &byte);
++	if (ret != sizeof(byte))
++		return 1;
++
++	if (hexagonfs_close(fds, aliasfd))
++		return 1;
++
++	if (hexagonfs_close(fds, rootfd))
++		return 1;
++
++	return 0;
++}
++
+ int main(int argc, const char **argv)
+ {
+ 	int ret;
+@@ -94,5 +165,9 @@ int main(int argc, const char **argv)
+ 	if (ret)
+ 		return ret;
+ 
++	ret = test_virtual_readdir_and_parent_alias(argv[1]);
++	if (ret)
++		return ret;
++
+ 	return 0;
+ }
+-- 
+2.50.1

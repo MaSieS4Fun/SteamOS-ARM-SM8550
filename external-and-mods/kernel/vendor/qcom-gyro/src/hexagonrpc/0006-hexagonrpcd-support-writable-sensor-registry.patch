@@ -1,0 +1,655 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: suckbluefrog <suckbluefrog@proton.me>
+Date: Thu, 16 Jul 2026 16:10:00 +0000
+Subject: [PATCH] hexagonrpcd: support writable sensor registry callbacks
+
+Modern SensorsPD firmware creates and updates calibration files through
+apps_std callbacks that HexagonRPC did not implement. Add fwrite, fsync,
+remove, truncate, and rename, and correct the fflush signature.
+
+Expose the complete persistent sensors directory at Qualcomm's expected
+registry path so registry data and sns_reg_version resolve exactly as they
+do on Android. Restrict all write-mode opens and destructive operations to
+that sensor persistence tree; DSP libraries and static configuration remain
+read-only.
+---
+ hexagonrpcd/apps_std.c              | 383 ++++++++++++++++++++++++++++---
+ hexagonrpcd/apps_std.h              |   3 +-
+ hexagonrpcd/interfaces/apps_std.def |   7 +-
+ hexagonrpcd/rpcd.c                  |   2 +-
+ hexagonrpcd/rpcd_builder.c          |  38 ++-
+ 5 files changed, 387 insertions(+), 46 deletions(-)
+
+--- a/hexagonrpcd/apps_std.c
++++ b/hexagonrpcd/apps_std.c
+@@ -19,9 +19,11 @@
+  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+  */
+ 
++#include <fcntl.h>
+ #include <errno.h>
+ #include <stdio.h>
+ #include <stdint.h>
++#include <stdlib.h>
+ #include <string.h>
+ #include <sys/stat.h>
+ #include <unistd.h>
+@@ -36,6 +38,7 @@
+ 	int rootfd;
+ 	int adsp_avs_cfg_dirfd;
+ 	int adsp_library_dirfd;
++	int sensor_persist_dirfd;
+ 	struct hexagonfs_fd *fds[HEXAGONFS_MAX_FD];
+ };
+ 
+@@ -60,8 +63,6 @@
+ 	printf("ignore fflush(%u)\n", *fd);
+ #endif
+ 
+-	memset(outbufs[0].p, 0, outbufs[0].s);
+-
+ 	return 0;
+ }
+ 
+@@ -120,6 +121,226 @@
+ 	return 0;
+ }
+ 
++static uint32_t apps_std_fwrite(void *data,
++				const struct fastrpc_io_buffer *inbufs,
++				struct fastrpc_io_buffer *outbufs)
++{
++	struct apps_std_ctx *ctx = data;
++	const struct {
++		uint32_t fd;
++		uint32_t buf_size;
++	} *first_in = inbufs[0].p;
++	struct {
++		uint32_t written;
++		uint32_t is_eof;
++	} *first_out = outbufs[0].p;
++	ssize_t ret;
++
++	if (first_in->buf_size > inbufs[1].s)
++		return AEE_EBADPARM;
++
++	ret = hexagonfs_write(ctx->fds, first_in->fd,
++			      first_in->buf_size, inbufs[1].p);
++	if (ret < 0) {
++		fprintf(stderr, "Could not write file: %s\n", strerror(-ret));
++		return AEE_EFAILED;
++	}
++
++#ifdef HEXAGONRPC_VERBOSE
++	printf("write(%u, %u) -> %ld\n", first_in->fd,
++					 first_in->buf_size,
++					 ret);
++#endif
++
++	first_out->written = ret;
++	first_out->is_eof = 0;
++
++	return 0;
++}
++
++static uint32_t apps_std_fsync(void *data,
++			       const struct fastrpc_io_buffer *inbufs,
++			       struct fastrpc_io_buffer *outbufs)
++{
++	/*
++	 * HexagonFS uses blocking file-descriptor I/O. This mirrors the
++	 * existing fflush implementation and is sufficient for the registry
++	 * service, which closes the temporary file before renaming it.
++	 */
++	return 0;
++}
++
++static char *apps_std_sensor_path(const char *path)
++{
++	static const char *const roots[] = {
++		"/mnt/vendor/persist/sensors/registry",
++		"/persist/sensors/registry",
++		"/mnt/vendor/persist/sensors",
++		"/persist/sensors",
++	};
++	const char *suffix = NULL;
++	const char *segment;
++	char *normalized;
++	size_t segment_len;
++	size_t path_len;
++	size_t root_len;
++	size_t out_len = 0;
++	size_t depth = 0;
++	size_t i;
++
++	if (path == NULL)
++		return NULL;
++
++	for (i = 0; i < sizeof(roots) / sizeof(roots[0]); i++) {
++		root_len = strlen(roots[i]);
++		if (!strncmp(path, roots[i], root_len)
++		 && (path[root_len] == '\0' || path[root_len] == '/')) {
++			suffix = &path[root_len];
++			break;
++		}
++	}
++	if (suffix == NULL)
++		return NULL;
++
++	while (*suffix == '/')
++		suffix++;
++
++	path_len = strlen(suffix);
++	normalized = malloc(path_len + 1);
++	if (normalized == NULL)
++		return NULL;
++
++	while (*suffix != '\0') {
++		segment = suffix;
++		while (*suffix != '\0' && *suffix != '/')
++			suffix++;
++		segment_len = suffix - segment;
++		while (*suffix == '/')
++			suffix++;
++
++		if (segment_len == 0
++		 || (segment_len == 1 && segment[0] == '.'))
++			continue;
++
++		if (segment_len == 2 && segment[0] == '.'
++		 && segment[1] == '.') {
++			if (depth == 0)
++				goto err;
++			while (out_len > 0 && normalized[out_len - 1] != '/')
++				out_len--;
++			if (out_len > 0)
++				out_len--;
++			depth--;
++			continue;
++		}
++
++		if (out_len != 0)
++			normalized[out_len++] = '/';
++		memcpy(&normalized[out_len], segment, segment_len);
++		out_len += segment_len;
++		depth++;
++	}
++
++	normalized[out_len] = '\0';
++	return normalized;
++
++err:
++	free(normalized);
++	return NULL;
++}
++
++static uint32_t apps_std_fremove(void *data,
++				 const struct fastrpc_io_buffer *inbufs,
++				 struct fastrpc_io_buffer *outbufs)
++{
++	struct apps_std_ctx *ctx = data;
++	const char *path = inbufs[1].p;
++	char *relative;
++	int ret;
++
++	if (path == NULL || inbufs[1].s == 0
++	 || path[inbufs[1].s - 1] != '\0')
++		return AEE_EBADPARM;
++
++	relative = apps_std_sensor_path(path);
++	if (relative == NULL || *relative == '\0') {
++		free(relative);
++		return AEE_EREADONLY;
++	}
++
++	ret = unlinkat(ctx->sensor_persist_dirfd, relative, 0);
++	if (ret && errno != ENOENT) {
++		fprintf(stderr, "Could not remove %s: %s\n",
++				path, strerror(errno));
++		free(relative);
++		return AEE_EFAILED;
++	}
++
++	free(relative);
++	return 0;
++}
++
++static uint32_t apps_std_ftrunc(void *data,
++				const struct fastrpc_io_buffer *inbufs,
++				struct fastrpc_io_buffer *outbufs)
++{
++	struct apps_std_ctx *ctx = data;
++	const struct {
++		uint32_t fd;
++		uint32_t length;
++	} *first_in = inbufs[0].p;
++	int ret;
++
++	ret = hexagonfs_ftruncate(ctx->fds, first_in->fd, first_in->length);
++	if (ret) {
++		fprintf(stderr, "Could not truncate file: %s\n", strerror(-ret));
++		return AEE_EFAILED;
++	}
++
++	return 0;
++}
++
++static uint32_t apps_std_frename(void *data,
++				 const struct fastrpc_io_buffer *inbufs,
++				 struct fastrpc_io_buffer *outbufs)
++{
++	struct apps_std_ctx *ctx = data;
++	const char *old_path = inbufs[1].p;
++	const char *new_path = inbufs[2].p;
++	char *old_relative;
++	char *new_relative;
++	int ret;
++
++	if (old_path == NULL || new_path == NULL
++	 || inbufs[1].s == 0 || inbufs[2].s == 0
++	 || old_path[inbufs[1].s - 1] != '\0'
++	 || new_path[inbufs[2].s - 1] != '\0')
++		return AEE_EBADPARM;
++
++	old_relative = apps_std_sensor_path(old_path);
++	new_relative = apps_std_sensor_path(new_path);
++	if (old_relative == NULL || new_relative == NULL
++	 || *old_relative == '\0' || *new_relative == '\0') {
++		free(old_relative);
++		free(new_relative);
++		return AEE_EREADONLY;
++	}
++
++	ret = renameat(ctx->sensor_persist_dirfd, old_relative,
++		       ctx->sensor_persist_dirfd, new_relative);
++	if (ret) {
++		fprintf(stderr, "Could not rename %s to %s: %s\n",
++				old_path, new_path, strerror(errno));
++		free(old_relative);
++		free(new_relative);
++		return AEE_EFAILED;
++	}
++
++	free(old_relative);
++	free(new_relative);
++	return 0;
++}
++
+ static uint32_t apps_std_fseek(void *data,
+ 			       const struct fastrpc_io_buffer *inbufs,
+ 			       struct fastrpc_io_buffer *outbufs)
+@@ -156,20 +377,46 @@
+ {
+ 	struct apps_std_ctx *ctx = data;
+ 	uint32_t *out = outbufs[0].p;
++	char *sensor_path = NULL;
+ 	char rw_mode;
++	int flags;
+ 	int dirfd, fd;
+ 
+ 	// The name and environment variable must also be NULL-terminated
+-	if (((const char *) inbufs[1].p)[inbufs[1].s - 1] != 0
++	if (inbufs[1].s == 0 || inbufs[3].s == 0 || inbufs[4].s == 0
++	 || ((const char *) inbufs[1].p)[inbufs[1].s - 1] != 0
+ 	 || ((const char *) inbufs[3].p)[inbufs[3].s - 1] != 0
+ 	 || ((const char *) inbufs[4].p)[inbufs[4].s - 1] != 0)
+ 		return AEE_EBADPARM;
+ 
+ 	rw_mode = ((const char *) inbufs[4].p)[0];
+-	if (rw_mode == 'w' || rw_mode == 'a') {
+-		fprintf(stderr, "Tried to open %s for writing\n",
+-				(const char *) inbufs[3].p);
+-		return AEE_EUNSUPPORTED;
++	switch (rw_mode) {
++	case 'r':
++		flags = O_RDONLY;
++		break;
++	case 'w':
++		flags = O_WRONLY | O_CREAT | O_TRUNC;
++		break;
++	case 'a':
++		flags = O_WRONLY | O_CREAT | O_APPEND;
++		break;
++	default:
++		return AEE_EBADPARM;
++	}
++	if (inbufs[4].s > 1 && ((const char *) inbufs[4].p)[1] == '+')
++		flags = (flags & ~O_ACCMODE) | O_RDWR;
++
++	/*
++	 * The DSP library search path is also used as the base for absolute
++	 * registry paths. Permit write-mode opens only below the persistent
++	 * sensor tree; all firmware and configuration mappings stay read-only.
++	 */
++	if ((flags & O_ACCMODE) != O_RDONLY) {
++		sensor_path = apps_std_sensor_path(inbufs[3].p);
++		if (sensor_path == NULL || *sensor_path == '\0') {
++			free(sensor_path);
++			return AEE_EREADONLY;
++		}
+ 	}
+ 
+ 	if (!strcmp(inbufs[1].p, "ADSP_LIBRARY_PATH")) {
+@@ -179,28 +426,34 @@
+ 	} else {
+ 		fprintf(stderr, "Unknown search directory %s\n",
+ 				(const char *) inbufs[1].p);
++		free(sensor_path);
+ 		return AEE_EBADPARM;
+ 	}
+ 
+ 	if (dirfd < 0) {
+ 		fprintf(stderr, "Could not open virtual %s: %s\n",
+ 				(const char *) inbufs[1].p, strerror(-dirfd));
++		free(sensor_path);
+ 		return AEE_EFAILED;
+ 	}
+ 
+-	fd = hexagonfs_openat(ctx->fds, ctx->rootfd, dirfd, inbufs[3].p);
++	fd = hexagonfs_openat_flags(ctx->fds, ctx->rootfd, dirfd,
++				    inbufs[3].p, flags, 0644);
++	free(sensor_path);
+ 	if (fd < 0) {
+-		fprintf(stderr, "Could not open %s: %s\n",
++		fprintf(stderr, "openat($%s, %s, %c) failed: %s\n",
++				(const char *) inbufs[1].p,
+ 				(const char *) inbufs[3].p,
+-				strerror(errno));
++				rw_mode,
++				strerror(-fd));
+ 		return AEE_EFAILED;
+ 	}
+ 
+ #ifdef HEXAGONRPC_VERBOSE
+-	printf("openat($%s, %s, %c) -> %d\n", (const char *) inbufs[1].p,
+-					      (const char *) inbufs[3].p,
+-					      rw_mode,
+-					      fd);
++	printf("openat($%s, %s, %c) -> %d\n",
++	       (const char *) inbufs[1].p,
++	       (const char *) inbufs[3].p,
++	       rw_mode, fd);
+ #endif
+ 
+ 	*out = fd;
+@@ -351,10 +604,13 @@
+ 	return 0;
+ }
+ 
+-struct fastrpc_interface *fastrpc_apps_std_init(struct hexagonfs_dirent *root)
++struct fastrpc_interface *fastrpc_apps_std_init(struct hexagonfs_dirent *root,
++						const char *prefix)
+ {
+ 	struct fastrpc_interface *iface;
+ 	struct apps_std_ctx *ctx;
++	char *sensor_persist;
++	size_t prefix_len;
+ 
+ 	iface = malloc(sizeof(struct fastrpc_interface));
+ 	if (iface == NULL)
+@@ -379,10 +635,27 @@
+ 						   ctx->rootfd,
+ 						   "/usr/lib/qcom/adsp/");
+ 
++	prefix_len = strlen(prefix);
++	sensor_persist = malloc(prefix_len + strlen("/sensors") + 1);
++	if (sensor_persist == NULL)
++		goto err_close_fds;
++	strcpy(sensor_persist, prefix);
++	strcat(sensor_persist, "/sensors");
++	ctx->sensor_persist_dirfd = open(sensor_persist,
++					 O_RDONLY | O_DIRECTORY);
++	free(sensor_persist);
++	if (ctx->sensor_persist_dirfd < 0)
++		goto err_close_fds;
++
+ 	iface->data = ctx;
+ 
+ 	return iface;
+ 
++err_close_fds:
++	for (int i = 0; i < HEXAGONFS_MAX_FD; i++) {
++		if (ctx->fds[i] != NULL)
++			hexagonfs_close(ctx->fds, i);
++	}
+ err_free_ctx:
+ 	free(ctx);
+ err_free_iface:
+@@ -401,74 +674,72 @@
+ 			hexagonfs_close(ctx->fds, i);
+ 	}
+ 
++	close(ctx->sensor_persist_dirfd);
+ 	free(iface->data);
+ 	free(iface);
+ }
+ 
+-static const struct fastrpc_function_impl apps_std_procs[] = {
+-	{ .def = NULL, .impl = NULL, },
+-	{ .def = NULL, .impl = NULL, },
+-	{
++static const struct fastrpc_function_impl apps_std_procs[34] = {
++	[2] = {
+ 		.def = &apps_std_fflush_def,
+ 		.impl = apps_std_fflush,
+ 	},
+-	{
++	[3] = {
+ 		.def = &apps_std_fclose_def,
+ 		.impl = apps_std_fclose,
+ 	},
+-	{
++	[4] = {
+ 		.def = &apps_std_fread_def,
+ 		.impl = apps_std_fread,
+ 	},
+-	{ .def = NULL, .impl = NULL, },
+-	{ .def = NULL, .impl = NULL, },
+-	{ .def = NULL, .impl = NULL, },
+-	{ .def = NULL, .impl = NULL, },
+-	{
++	[5] = {
++		.def = &apps_std_fwrite_def,
++		.impl = apps_std_fwrite,
++	},
++	[9] = {
+ 		.def = &apps_std_fseek_def,
+ 		.impl = apps_std_fseek,
+ 	},
+-	{ .def = NULL, .impl = NULL, },
+-	{ .def = NULL, .impl = NULL, },
+-	{ .def = NULL, .impl = NULL, },
+-	{ .def = NULL, .impl = NULL, },
+-	{ .def = NULL, .impl = NULL, },
+-	{ .def = NULL, .impl = NULL, },
+-	{ .def = NULL, .impl = NULL, },
+-	{ .def = NULL, .impl = NULL, },
+-	{ .def = NULL, .impl = NULL, },
+-	{
++	[19] = {
+ 		.def = &apps_std_fopen_with_env_def,
+ 		.impl = apps_std_fopen_with_env,
+ 	},
+-	{ .def = NULL, .impl = NULL, },
+-	{ .def = NULL, .impl = NULL, },
+-	{ .def = NULL, .impl = NULL, },
+-	{ .def = NULL, .impl = NULL, },
+-	{ .def = NULL, .impl = NULL, },
+-	{ .def = NULL, .impl = NULL, },
+-	{
++	[23] = {
++		.def = &apps_std_fsync_def,
++		.impl = apps_std_fsync,
++	},
++	[24] = {
++		.def = &apps_std_fremove_def,
++		.impl = apps_std_fremove,
++	},
++	[26] = {
+ 		.def = &apps_std_opendir_def,
+ 		.impl = apps_std_opendir,
+ 	},
+-	{
++	[27] = {
+ 		.def = &apps_std_closedir_def,
+ 		.impl = apps_std_closedir,
+ 	},
+-	{
++	[28] = {
+ 		.def = &apps_std_readdir_def,
+ 		.impl = apps_std_readdir,
+ 	},
+-	{ .def = NULL, .impl = NULL, },
+-	{ .def = NULL, .impl = NULL, },
+-	{
++	[31] = {
+ 		.def = &apps_std_stat_def,
+ 		.impl = apps_std_stat,
+ 	},
++	[32] = {
++		.def = &apps_std_ftrunc_def,
++		.impl = apps_std_ftrunc,
++	},
++	[33] = {
++		.def = &apps_std_frename_def,
++		.impl = apps_std_frename,
++	},
+ };
+ 
+ const struct fastrpc_interface apps_std_interface = {
+ 	.name = "apps_std",
+-	.n_procs = 32,
++	.n_procs = 34,
+ 	.procs = apps_std_procs,
+ };
+--- a/hexagonrpcd/apps_std.h
++++ b/hexagonrpcd/apps_std.h
+@@ -25,7 +25,8 @@
+ #include "hexagonfs.h"
+ #include "listener.h"
+ 
+-struct fastrpc_interface *fastrpc_apps_std_init(struct hexagonfs_dirent *root);
++struct fastrpc_interface *fastrpc_apps_std_init(struct hexagonfs_dirent *root,
++						const char *prefix);
+ void fastrpc_apps_std_deinit(struct fastrpc_interface *iface);
+ 
+ #endif
+--- a/hexagonrpcd/interfaces/apps_std.def
++++ b/hexagonrpcd/interfaces/apps_std.def
+@@ -25,14 +25,19 @@
+ #include <libhexagonrpc/interface.h>
+ 
+ HEXAGONRPC_DEFINE_REMOTE_METHOD(1, apps_std_freopen, 1, 0, 1, 1)
+-HEXAGONRPC_DEFINE_REMOTE_METHOD(2, apps_std_fflush, 8, 0, 0, 0)
++HEXAGONRPC_DEFINE_REMOTE_METHOD(2, apps_std_fflush, 1, 0, 0, 0)
+ HEXAGONRPC_DEFINE_REMOTE_METHOD(3, apps_std_fclose, 1, 0, 0, 0)
+ HEXAGONRPC_DEFINE_REMOTE_METHOD(4, apps_std_fread, 1, 0, 2, 1)
++HEXAGONRPC_DEFINE_REMOTE_METHOD(5, apps_std_fwrite, 1, 1, 2, 0)
+ HEXAGONRPC_DEFINE_REMOTE_METHOD(9, apps_std_fseek, 3, 0, 0, 0)
+ HEXAGONRPC_DEFINE_REMOTE_METHOD(19, apps_std_fopen_with_env, 0, 4, 1, 0)
++HEXAGONRPC_DEFINE_REMOTE_METHOD(23, apps_std_fsync, 1, 0, 0, 0)
++HEXAGONRPC_DEFINE_REMOTE_METHOD(24, apps_std_fremove, 0, 1, 0, 0)
+ HEXAGONRPC_DEFINE_REMOTE_METHOD(26, apps_std_opendir, 0, 1, 2, 0)
+ HEXAGONRPC_DEFINE_REMOTE_METHOD(27, apps_std_closedir, 2, 0, 0, 0)
+ HEXAGONRPC_DEFINE_REMOTE_METHOD(28, apps_std_readdir, 2, 0, 66, 0)
+ HEXAGONRPC_DEFINE_REMOTE_METHOD(31, apps_std_stat, 1, 1, 24, 0)
++HEXAGONRPC_DEFINE_REMOTE_METHOD(32, apps_std_ftrunc, 2, 0, 0, 0)
++HEXAGONRPC_DEFINE_REMOTE_METHOD(33, apps_std_frename, 0, 2, 0, 0)
+ 
+ #endif /* INTERFACE_APPS_STD_DEF */
+--- a/hexagonrpcd/rpcd.c
++++ b/hexagonrpcd/rpcd.c
+@@ -291,7 +291,7 @@
+ 	ifaces[REMOTECTL_HANDLE] = fastrpc_localctl_init(n_ifaces, ifaces);
+ 
+ 	// Dynamic interfaces with no hardcoded handle
+-	ifaces[1] = fastrpc_apps_std_init(root_dir);
++	ifaces[1] = fastrpc_apps_std_init(root_dir, device_dir);
+ 	ifaces[2] = fastrpc_apps_mem_init(fd);
+ 	ifaces[3] = fastrpc_sns_registry_init();
+ 
+--- a/hexagonrpcd/rpcd_builder.c
++++ b/hexagonrpcd/rpcd_builder.c
+@@ -29,8 +29,8 @@
+ #define ACDBDATA		"/acdb/"
+ #define DSP_LIBS		"/dsp/"
+ #define SENSORS_CONFIG		"/sensors/config/"
+-#define SENSORS_REGISTRY	"/sensors/registry/"
+-#define SNS_REG_VERSION		"/sensors/sns_reg_version"
++#define SENSORS_PERSIST		"/sensors/"
++#define SENSORS_CAM_DUMP	"/sensors/cam_registry_dump.txt"
+ #define SNS_REG_CONFIG		"/sensors/sns_reg.conf"
+ #define SYSFS_SOCINFO		"/socinfo/"
+ 
+@@ -112,8 +112,8 @@
+  */
+ struct hexagonfs_dirent *construct_root_dir(const char *prefix, const char *dsp)
+ {
+-	char *acdbdata, *dsp_libs, *sns_cfg, *sns_reg, *sns_reg_config,
+-	     *sns_reg_version, *socinfo;
++	char *acdbdata, *dsp_libs, *sns_cam_dump, *sns_cfg, *sns_persist,
++	     *sns_reg_config, *socinfo;
+ 	size_t n_prefix;
+ 	struct hexagonfs_dirent *persist_dir, *vendor_dir;
+ 
+@@ -121,9 +121,9 @@
+ 
+ 	acdbdata = malloc(n_prefix + strlen(ACDBDATA) + 1);
+ 	sns_cfg = malloc(n_prefix + strlen(SENSORS_CONFIG) + 1);
+-	sns_reg = malloc(n_prefix + strlen(SENSORS_REGISTRY) + 1);
++	sns_persist = malloc(n_prefix + strlen(SENSORS_PERSIST) + 1);
++	sns_cam_dump = malloc(n_prefix + strlen(SENSORS_CAM_DUMP) + 1);
+ 	sns_reg_config = malloc(n_prefix + strlen(SNS_REG_CONFIG) + 1);
+-	sns_reg_version = malloc(n_prefix + strlen(SNS_REG_VERSION) + 1);
+ 	socinfo = malloc(n_prefix + strlen(SYSFS_SOCINFO) + 1);
+ 
+ 	dsp_libs = malloc(n_prefix + strlen(DSP_LIBS) + strlen(dsp) + 1);
+@@ -138,9 +138,14 @@
+ 		strcat(sns_cfg, SENSORS_CONFIG);
+ 	}
+ 
+-	if (sns_reg != NULL) {
+-		strcpy(sns_reg, prefix);
+-		strcat(sns_reg, SENSORS_REGISTRY);
++	if (sns_persist != NULL) {
++		strcpy(sns_persist, prefix);
++		strcat(sns_persist, SENSORS_PERSIST);
++	}
++
++	if (sns_cam_dump != NULL) {
++		strcpy(sns_cam_dump, prefix);
++		strcat(sns_cam_dump, SENSORS_CAM_DUMP);
+ 	}
+ 
+ 	if (sns_reg_config != NULL) {
+@@ -148,11 +153,6 @@
+ 		strcat(sns_reg_config, SNS_REG_CONFIG);
+ 	}
+ 
+-	if (sns_reg_version != NULL) {
+-		strcpy(sns_reg_version, prefix);
+-		strcat(sns_reg_version, SNS_REG_VERSION);
+-	}
+-
+ 	if (socinfo != NULL) {
+ 		strcpy(socinfo, prefix);
+ 		strcat(socinfo, SYSFS_SOCINFO);
+@@ -169,12 +169,10 @@
+ 	 * a hard link between both locations.
+ 	 */
+ 	persist_dir = hfs_mkdir("persist", 1,
+-				hfs_mkdir("sensors", 1,
+-					hfs_mkdir("registry", 2,
+-						hfs_map("registry", sns_reg),
+-						hfs_map("sns_reg_version",
+-							sns_reg_version)
+-					)
++				hfs_mkdir("sensors", 2,
++					hfs_map("registry", sns_persist),
++					hfs_map("cam_registry_dump.txt",
++						sns_cam_dump)
+ 				)
+ 		      );
+ 
+-- 
+2.50.1

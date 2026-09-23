@@ -1,0 +1,46 @@
+#!/bin/bash
+# Restore root ownership + setuid on tools that must be setuid root.
+# Extracting packages as a normal user (or copying the SD) drops those bits.
+# After this, pkexec/sudo use the desktop user password — no root password needed.
+set -euo pipefail
+
+log() { printf 'sm8550-restore-privs: %s\n' "$*"; }
+
+# Image copies often leave /usr owned by a normal user. Ensure we can chown.
+if [[ ! -w /usr/bin/pkexec ]]; then
+  mount -o remount,rw / 2>/dev/null || true
+fi
+
+fix_suid() {
+  local path="$1" mode="${2:-4755}" owner="${3:-root:root}"
+  [[ -e "$path" ]] || return 0
+  chown "$owner" "$path" || return 0
+  chmod "$mode" "$path" || return 0
+  log "fixed $path ($mode $owner)"
+}
+
+# PolicyKit / sudo — this is "pkexec must be setuid root"
+fix_suid /usr/bin/pkexec 4755 root:root
+fix_suid /usr/bin/sudo 4755 root:root
+fix_suid /usr/lib/polkit-1/polkit-agent-helper-1 4755 root:root
+
+# shadow / util-linux
+fix_suid /usr/bin/su 4755 root:root
+fix_suid /usr/bin/passwd 4755 root:root
+fix_suid /usr/bin/newgrp 4755 root:root
+fix_suid /usr/bin/chsh 4755 root:root
+fix_suid /usr/bin/chfn 4755 root:root
+fix_suid /usr/bin/gpasswd 4755 root:root
+fix_suid /usr/bin/unix_chkpwd 4755 root:root
+fix_suid /usr/bin/mount 4755 root:root
+fix_suid /usr/bin/umount 4755 root:root
+
+# D-Bus system helper (group dbus if present)
+if getent group dbus >/dev/null 2>&1; then
+  fix_suid /usr/lib/dbus-1.0/dbus-daemon-launch-helper 4750 root:dbus
+else
+  fix_suid /usr/lib/dbus-1.0/dbus-daemon-launch-helper 4750 root:root
+fi
+
+# Do not invent a root password. sudo/pkexec authenticate as the logged-in user.
+exit 0

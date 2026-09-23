@@ -1,0 +1,11 @@
+{
+  "name": "SM8550-Power",
+  "author": "SteamOS-Ubuntu (based on Hooandee/panel-de-control)",
+  "api_version": 1,
+  "flags": ["root"],
+  "publish": {
+    "tags": ["power", "sm8550", "qualcomm", "arm64", "handheld", "battery", "gpu"],
+    "description": "Power profiles for Qualcomm SM8550 handhelds (Odin 2, Thor, Portal, Retroid Pocket 6).",
+    "image": "https://opengraph.githubassets.com/1/SteamDeckHomebrew/decky-loader"
+  }
+}

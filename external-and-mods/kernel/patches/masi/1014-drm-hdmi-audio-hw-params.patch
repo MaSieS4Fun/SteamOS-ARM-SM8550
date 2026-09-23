@@ -1,0 +1,24 @@
+From: MaSi-OS <masi@local>
+Subject: [PATCH] drm/display: wire hw_params to DP/HDMI audio prepare
+
+Userspace ALSA still calls hdmi_codec hw_params during PCM setup. After
+drm/msm/dp switched to drm_connector_hdmi_audio_ops, msm_dp_audio_prepare
+only ran from .prepare, so DISPLAY_PORT_RX_0 graph start happened before
+the DP link was configured and q6apm port 104 failed with DSP 1001002.
+
+Call drm_connector_hdmi_audio_prepare from .hw_params as well so DP audio
+is configured before q6apm_lpass_dai_prepare() runs.
+
+Signed-off-by: MaSi-OS <masi@local>
+
+diff --git a/drivers/gpu/drm/display/drm_hdmi_audio_helper.c b/drivers/gpu/drm/display/drm_hdmi_audio_helper.c
+--- a/drivers/gpu/drm/display/drm_hdmi_audio_helper.c
++++ b/drivers/gpu/drm/display/drm_hdmi_audio_helper.c
+@@ -130,6 +130,7 @@ EXPORT_SYMBOL(drm_connector_hdmi_audio_plugged_notify);
+ 
+ static const struct hdmi_codec_ops drm_connector_hdmi_audio_ops = {
+ 	.audio_startup = drm_connector_hdmi_audio_startup,
++	.hw_params = drm_connector_hdmi_audio_prepare,
+ 	.prepare = drm_connector_hdmi_audio_prepare,
+ 	.audio_shutdown = drm_connector_hdmi_audio_shutdown,
+ 	.mute_stream = drm_connector_hdmi_audio_mute_stream,

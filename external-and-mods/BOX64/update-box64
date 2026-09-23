@@ -1,0 +1,227 @@
+#!/usr/bin/env bash
+# Box64 manager: install/update from upstream, or uninstall completely.
+# English UI. Used from ARM-Manager and during image bake (install mode).
+set -euo pipefail
+
+WORK_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/update-box64"
+BOX64_SRC="${WORK_DIR}/box64"
+BUILD_DIR="${BOX64_SRC}/build"
+REPO_URL="https://github.com/ptitSeb/box64"
+CMAKE_FLAGS=(-DSD8G2=1 -DCMAKE_BUILD_TYPE=RelWithDebInfo)
+MANIFEST_DST="/usr/local/share/box64/install_manifest.txt"
+need_gcc_major=12
+
+# Fallback list (from a known SD8G2 cmake install_manifest.txt) if no saved manifest.
+DEFAULT_MANIFEST=(
+  /usr/local/bin/box64
+  /usr/local/bin/box64-configurator
+  /usr/local/share/applications/box64-configurator.desktop
+  /usr/local/bin/box64-bash
+  /usr/local/bin/box64-python
+  /usr/local/share/box64/sitecustomize.py
+  /etc/binfmt.d/box64.conf
+  /etc/box64.box64rc
+  /usr/lib/box64-x86_64-linux-gnu/libstdc++.so.5
+  /usr/lib/box64-x86_64-linux-gnu/libstdc++.so.6
+  /usr/lib/box64-x86_64-linux-gnu/libgcc_s.so.1
+  /usr/lib/box64-x86_64-linux-gnu/libpng12.so.0
+  /usr/lib/box64-x86_64-linux-gnu/libcrypto.so.1.1
+  /usr/lib/box64-x86_64-linux-gnu/libcrypto.so.1.0.0
+  /usr/lib/box64-x86_64-linux-gnu/libssl.so.1.1
+  /usr/lib/box64-x86_64-linux-gnu/libssl.so.1.0.0
+  /usr/lib/box64-x86_64-linux-gnu/libunwind.so.8
+  /usr/lib/box64-x86_64-linux-gnu/libmbedx509.so.1
+  /usr/lib/box64-x86_64-linux-gnu/libmbedx509.so.0
+  /usr/lib/box64-x86_64-linux-gnu/libmbedtls.so.14
+  /usr/lib/box64-x86_64-linux-gnu/libmbedtls.so.12
+  /usr/lib/box64-x86_64-linux-gnu/libmbedcrypto.so.7
+  /usr/lib/box64-x86_64-linux-gnu/libmbedcrypto.so.3
+)
+
+log() { printf '==> %s\n' "$*"; }
+die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+
+need_root() {
+  if [[ "${EUID}" -ne 0 ]]; then
+    log "Administrator privileges are required."
+    exec sudo -- "$0" "$@"
+  fi
+}
+
+keep_sudo_alive() {
+  [[ "${EUID}" -eq 0 ]] && return 0
+  while sudo -n true 2>/dev/null; do
+    sleep 60
+    kill -0 "$$" || exit
+  done 2>/dev/null &
+}
+
+save_manifest() {
+  local src_manifest="${1:-}"
+  mkdir -p "$(dirname "$MANIFEST_DST")"
+  if [[ -n "$src_manifest" && -f "$src_manifest" ]]; then
+    cp -f "$src_manifest" "$MANIFEST_DST"
+  else
+    printf '%s\n' "${DEFAULT_MANIFEST[@]}" >"$MANIFEST_DST"
+  fi
+  # Always record the manifest path itself for uninstall
+  if ! grep -qxF "$MANIFEST_DST" "$MANIFEST_DST" 2>/dev/null; then
+    echo "$MANIFEST_DST" >>"$MANIFEST_DST"
+  fi
+  chmod 644 "$MANIFEST_DST"
+}
+
+do_install() {
+  need_root "$@"
+  keep_sudo_alive
+
+  for cmd in git cmake make gcc g++; do
+    command -v "$cmd" >/dev/null || die "Missing required tool: $cmd"
+  done
+
+  local gcc_major
+  gcc_major="$(gcc -dumpversion | cut -d. -f1)"
+  if (( gcc_major < need_gcc_major )); then
+    die "box64 SD8G2 requires GCC ${need_gcc_major}+ (found GCC ${gcc_major})."
+  fi
+
+  mkdir -p "$WORK_DIR"
+  cd "$WORK_DIR"
+
+  if [[ -d "$BOX64_SRC" ]]; then
+    log "Removing previous clone..."
+    rm -rf "$BOX64_SRC"
+  fi
+
+  log "Cloning box64..."
+  git clone --recursive "$REPO_URL" "$BOX64_SRC"
+
+  log "Building box64 for SD8G2..."
+  mkdir -p "$BUILD_DIR"
+  cmake -S "$BOX64_SRC" -B "$BUILD_DIR" "${CMAKE_FLAGS[@]}"
+  cmake --build "$BUILD_DIR" -j"$(nproc)"
+
+  log "Installing..."
+  cmake --install "$BUILD_DIR"
+
+  if [[ -f "${BUILD_DIR}/install_manifest.txt" ]]; then
+    save_manifest "${BUILD_DIR}/install_manifest.txt"
+  else
+    save_manifest
+  fi
+
+  if systemctl list-unit-files systemd-binfmt.service &>/dev/null; then
+    systemctl restart systemd-binfmt 2>/dev/null || true
+  fi
+
+  log "Removing build cache..."
+  rm -rf "$WORK_DIR"
+
+  log "Done. box64 is installed/updated."
+  if command -v box64 >/dev/null; then
+    box64 --version 2>/dev/null || true
+  fi
+  log "Manifest saved: ${MANIFEST_DST}"
+}
+
+do_uninstall() {
+  need_root "$@"
+
+  log "Uninstalling box64 completely..."
+
+  # Prefer saved manifest from last install; else known default list
+  local -a files=()
+  if [[ -f "$MANIFEST_DST" ]]; then
+    mapfile -t files < <(grep -vE '^\s*(#|$)' "$MANIFEST_DST" || true)
+  else
+    files=("${DEFAULT_MANIFEST[@]}")
+  fi
+
+  local f
+  for f in "${files[@]}"; do
+    [[ -n "$f" ]] || continue
+    if [[ -e "$f" || -L "$f" ]]; then
+      rm -f "$f" && log "Removed $f" || true
+    fi
+  done
+
+  # Empty dirs left behind
+  rmdir /usr/lib/box64-x86_64-linux-gnu 2>/dev/null || \
+    rm -rf /usr/lib/box64-x86_64-linux-gnu 2>/dev/null || true
+  rmdir /usr/local/share/box64 2>/dev/null || \
+    rm -rf /usr/local/share/box64 2>/dev/null || true
+
+  # Common extra paths (older installs / apt leftovers without breaking Mesa)
+  rm -f /usr/bin/box64 /usr/local/bin/box64 2>/dev/null || true
+  rm -f /etc/binfmt.d/box64.conf /etc/binfmt.d/box32.conf 2>/dev/null || true
+  rm -f /usr/lib/binfmt.d/box64.conf /usr/lib/binfmt.d/box32.conf 2>/dev/null || true
+  rm -f /lib/binfmt.d/box64.conf /lib/binfmt.d/box32.conf 2>/dev/null || true
+
+  if command -v dpkg >/dev/null && dpkg -l box64 2>/dev/null | grep -q '^ii'; then
+    log "Removing apt box64 package (force-depends; no apt --fix-broken)..."
+    dpkg --remove --force-depends box64 2>/dev/null || true
+  fi
+
+  if systemctl list-unit-files systemd-binfmt.service &>/dev/null; then
+    systemctl restart systemd-binfmt 2>/dev/null || true
+  fi
+
+  log "Done. box64 has been removed. You can use FEX instead if desired."
+}
+
+show_menu() {
+  clear 2>/dev/null || true
+  cat <<'EOF'
+========================================
+  Box64 manager
+========================================
+  1) Update or install box64
+  2) Uninstall box64
+  3) Quit
+========================================
+EOF
+  local choice
+  read -r -p "Select an option [1-3]: " choice
+  case "${choice}" in
+    1) do_install "$@" ;;
+    2)
+      read -r -p "This will remove box64 completely. Continue? [y/N]: " yn
+      case "${yn}" in
+        y|Y|yes|YES) do_uninstall "$@" ;;
+        *) log "Cancelled." ;;
+      esac
+      ;;
+    3|q|Q) log "Bye." ;;
+    *) die "Invalid option: ${choice}" ;;
+  esac
+}
+
+usage() {
+  cat <<'EOF'
+Usage: update-box64 [command]
+
+Commands:
+  install | update   Build from upstream and install/update box64 (SD8G2)
+  uninstall          Remove box64 completely (for switching to FEX, etc.)
+  (no argument)      Interactive menu
+
+EOF
+}
+
+cmd="${1:-}"
+case "${cmd}" in
+  ""|menu) show_menu "$@" ;;
+  install|update|--install|--update)
+    shift || true
+    do_install "$@"
+    ;;
+  uninstall|--uninstall|remove)
+    shift || true
+    do_uninstall "$@"
+    ;;
+  -h|--help|help) usage ;;
+  *)
+    usage
+    die "Unknown command: ${cmd}"
+    ;;
+esac

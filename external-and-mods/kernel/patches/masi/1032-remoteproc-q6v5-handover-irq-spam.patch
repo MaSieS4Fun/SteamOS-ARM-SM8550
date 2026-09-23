@@ -1,0 +1,33 @@
+From: MaSi-OS <masies@local>
+Subject: [PATCH] remoteproc: qcom-q6v5: silence ADSP handover IRQ spam
+
+On SM8550 ADSP the firmware keeps asserting the handover interrupt after
+the AP has already handled it. Linux 7.2 logs dev_err on every spurious
+edge (~5/s), flooding dmesg/journal.
+
+Disable the handover IRQ after the first successful handover and drop the
+duplicate error print (the IRQ should not fire again once masked).
+
+Signed-off-by: MaSi-OS <masies@local>
+
+diff --git a/drivers/remoteproc/qcom_q6v5.c b/drivers/remoteproc/qcom_q6v5.c
+index 111111111111..222222222222 100644
+--- a/drivers/remoteproc/qcom_q6v5.c
++++ b/drivers/remoteproc/qcom_q6v5.c
+@@ -164,8 +164,7 @@ static irqreturn_t q6v5_handover_interrupt(int irq, void *data)
+ 	struct qcom_q6v5 *q6v5 = data;
+ 
+ 	if (q6v5->handover_issued) {
+-		dev_err(q6v5->dev, "Handover signaled, but it already happened\n");
+ 		return IRQ_HANDLED;
+ 	}
+ 
+ 	if (q6v5->handover)
+@@ -175,6 +174,7 @@ static irqreturn_t q6v5_handover_interrupt(int irq, void *data)
+ 	icc_set_bw(q6v5->path, 0, 0);
+ 
+ 	q6v5->handover_issued = true;
++	disable_irq(q6v5->handover_irq);
+ 
+ 	return IRQ_HANDLED;
+ }

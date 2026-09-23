@@ -1,0 +1,16 @@
+[Unit]
+Description=SM8550 NetworkManager wpa_supplicant backend
+DefaultDependencies=no
+After=local-fs.target
+Before=NetworkManager.service iwd.service
+Wants=local-fs.target
+
+[Service]
+Type=oneshot
+# RemainAfterExit=yes would block PathChanged re-runs after Steam writes iwd.
+RemainAfterExit=no
+ExecStart=/usr/lib/steamos/sm8550-wifi-backend
+
+[Install]
+WantedBy=NetworkManager.service
+WantedBy=multi-user.target

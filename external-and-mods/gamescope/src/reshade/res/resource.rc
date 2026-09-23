@@ -1,0 +1,137 @@
+// Microsoft Visual C++ generated resource script.
+//
+#pragma code_page(65001)
+
+#include "resource.h"
+
+#define APSTUDIO_READONLY_SYMBOLS
+/////////////////////////////////////////////////////////////////////////////
+//
+// Generated from the TEXTINCLUDE 2 resource.
+//
+#include <winresrc.h>
+
+/////////////////////////////////////////////////////////////////////////////
+#undef APSTUDIO_READONLY_SYMBOLS
+
+/////////////////////////////////////////////////////////////////////////////
+// Neutral (Default) resources
+
+#if !defined(AFX_RESOURCE_DLL) || defined(AFX_TARG_NEUD)
+LANGUAGE LANG_NEUTRAL, SUBLANG_DEFAULT
+
+#ifdef APSTUDIO_INVOKED
+/////////////////////////////////////////////////////////////////////////////
+//
+// TEXTINCLUDE
+//
+
+1 TEXTINCLUDE 
+BEGIN
+    "resource.h\0"
+END
+
+2 TEXTINCLUDE 
+BEGIN
+    "#include <winresrc.h>\r\n"
+    "\0"
+END
+
+3 TEXTINCLUDE 
+BEGIN
+    "#include ""version.rc2""\r\n"
+    "\0"
+END
+
+#endif    // APSTUDIO_INVOKED
+
+
+/////////////////////////////////////////////////////////////////////////////
+//
+// Icon
+//
+
+// Icon with lowest ID value placed first to ensure application icon
+// remains consistent on all systems.
+#if defined(RESHADE_FXC) || defined(RESHADE_TEST_APPLICATION) || defined(APSTUDIO_INVOKED)
+MAIN_ICON               ICON                    "main_icon.ico"
+#endif
+
+
+/////////////////////////////////////////////////////////////////////////////
+//
+// RCDATA
+//
+
+#if !defined(RESHADE_FXC)
+IDB_MAIN_ICON           RCDATA                  "main_icon_small.png"
+
+IDR_COPY_PS             RCDATA                  "shaders\\copy_ps.cso"
+
+IDR_FULLSCREEN_VS       RCDATA                  "shaders\\fullscreen_vs.cso"
+
+IDR_IMGUI_PS_3_0        RCDATA                  "shaders\\imgui_ps_3_0.cso"
+
+IDR_IMGUI_PS_4_0        RCDATA                  "shaders\\imgui_ps_4_0.cso"
+
+IDR_IMGUI_PS_4_0_HDR    RCDATA                  "shaders\\imgui_ps_4_0_hdr.cso"
+
+IDR_IMGUI_PS_SPIRV      RCDATA                  "shaders\\imgui_ps.spv"
+
+IDR_IMGUI_PS_SPIRV_HDR  RCDATA                  "shaders\\imgui_ps_hdr.spv"
+
+IDR_IMGUI_VS_3_0        RCDATA                  "shaders\\imgui_vs_3_0.cso"
+
+IDR_IMGUI_VS_4_0        RCDATA                  "shaders\\imgui_vs_4_0.cso"
+
+IDR_IMGUI_VS_SPIRV      RCDATA                  "shaders\\imgui_vs.spv"
+
+IDR_MIPMAP_CS           RCDATA                  "shaders\\mipmap_cs.cso"
+
+IDR_LICENSE_GL3W        RCDATA                  "..\\deps\\gl3w\\UNLICENSE"
+
+IDR_LICENSE_IMGUI       RCDATA                  "..\\deps\\imgui\\LICENSE.txt"
+
+IDR_LICENSE_MINHOOK     RCDATA                  "..\\deps\\minhook\\LICENSE.txt"
+
+IDR_LICENSE_OPENVR      RCDATA                  "..\\deps\\openvr\\LICENSE"
+
+IDR_LICENSE_OPENXR      RCDATA                  "..\\deps\\openxr\\LICENSE"
+
+IDR_LICENSE_RESHADE     RCDATA                  "..\\LICENSE.md"
+
+IDR_LICENSE_SPIRV       RCDATA                  "..\\deps\\spirv\\LICENSE"
+
+IDR_LICENSE_STB         RCDATA                  "..\\deps\\stb\\LICENSE"
+
+IDR_LICENSE_UTFCPP      RCDATA                  "..\\deps\\utfcpp\\LICENSE"
+
+IDR_LICENSE_VMA         RCDATA                  "..\\deps\\vma\\LICENSE.txt"
+
+IDR_LICENSE_VULKAN      RCDATA                  "..\\deps\\vulkan\\LICENSE.md"
+#endif
+
+#endif    // Neutral (Default) resources
+/////////////////////////////////////////////////////////////////////////////
+
+
+
+#ifndef APSTUDIO_INVOKED
+/////////////////////////////////////////////////////////////////////////////
+//
+// Generated from the TEXTINCLUDE 3 resource.
+//
+#include "version.rc2"
+#if defined(RESHADE_LOCALIZATION)
+#include "lang_bg-BG.rc2"
+#include "lang_de-DE.rc2"
+#include "lang_en-US.rc2"
+#include "lang_fr-FR.rc2"
+#include "lang_ja-JP.rc2"
+#include "lang_ko-KR.rc2"
+#include "lang_zh-CN.rc2"
+#endif
+
+/////////////////////////////////////////////////////////////////////////////
+#endif    // not APSTUDIO_INVOKED
+

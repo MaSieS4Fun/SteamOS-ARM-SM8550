@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Easy Kernel Updater
+GenericName=SM8550 Kernel Updater
+Comment=Show the running SM8550 kernel and install newer builds when available
+Exec=easy-kernel-updater gui
+Icon=easy-kernel-updater
+Terminal=false
+Categories=System;Settings;X-ARM-Manager;
+Keywords=kernel;sm8550;update;abl;maintenance;
+StartupNotify=true

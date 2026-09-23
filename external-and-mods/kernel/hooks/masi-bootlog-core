@@ -1,0 +1,147 @@
+#!/bin/sh
+# Shared helpers for MaSi initramfs boot logging (sourced, not executed).
+
+MASIBOOT_MNT="/run/masi-bootmnt"
+MASIBOOT_LOG="${MASIBOOT_MNT}/masi-boot.log"
+MASIBOOT_PID="/run/masi-bootlog.pid"
+MASIBOOT_DEV="/run/masi-bootdev"
+
+masi_bootlog_enabled() {
+	grep -q 'masi\.bootlog=1' /proc/cmdline 2>/dev/null
+}
+
+masi_bootlog_ts() {
+	date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || date -u
+}
+
+masi_bootlog_append_header() {
+	local phase="$1"
+	{
+		echo "===== MaSi boot log ====="
+		echo "phase: ${phase}"
+		echo "time: $(masi_bootlog_ts)"
+		echo "--- /proc/cmdline ---"
+		cat /proc/cmdline 2>/dev/null
+		echo
+		if [ -r /proc/device-tree/model ]; then
+			echo "--- /proc/device-tree/model ---"
+			tr -d '\0' < /proc/device-tree/model
+			echo
+		fi
+		if [ -r /proc/device-tree/compatible ]; then
+			echo "--- /proc/device-tree/compatible ---"
+			tr '\0' ' ' < /proc/device-tree/compatible
+			echo
+		fi
+		echo "--- /proc/version ---"
+		cat /proc/version 2>/dev/null
+		echo
+	} >> "${MASIBOOT_LOG}"
+}
+
+masi_bootlog_append_dmesg() {
+	local tag="$1"
+	{
+		echo "--- dmesg ${tag} $(masi_bootlog_ts) ---"
+		dmesg 2>/dev/null
+		echo
+	} >> "${MASIBOOT_LOG}"
+}
+
+masi_bootlog_find_dev() {
+	local dev spec mp="/run/masi-bootprobe"
+
+	if [ -s "${MASIBOOT_DEV}" ]; then
+		read -r dev < "${MASIBOOT_DEV}"
+		[ -n "${dev}" ] && [ -b "${dev}" ] && echo "${dev}"
+		return 0
+	fi
+
+	for spec in \
+		/dev/disk/by-partlabel/boot \
+		/dev/disk/by-label/BOOT \
+		/dev/disk/by-label/boot; do
+		[ -e "${spec}" ] || continue
+		dev="$(readlink -f "${spec}" 2>/dev/null)" || dev="${spec}"
+		[ -b "${dev}" ] || continue
+		echo "${dev}" > "${MASIBOOT_DEV}"
+		echo "${dev}"
+		return 0
+	done
+
+	mkdir -p "${mp}"
+	for dev in /dev/mmcblk*p[0-9]* /dev/nvme*n*p[0-9]* /dev/sd*[0-9]*; do
+		[ -b "${dev}" ] || continue
+		mount -t vfat -o ro "${dev}" "${mp}" 2>/dev/null || \
+		mount -t exfat -o ro "${dev}" "${mp}" 2>/dev/null || \
+		mount -o ro "${dev}" "${mp}" 2>/dev/null || continue
+		if [ -f "${mp}/KERNEL" ] || [ -f "${mp}/LinuxLoader.cfg" ] || \
+		   [ -f "${mp}/armbianEnv.txt" ] || [ -f "${mp}/boot.scr" ]; then
+			umount "${mp}" 2>/dev/null
+			echo "${dev}" > "${MASIBOOT_DEV}"
+			echo "${dev}"
+			return 0
+		fi
+		umount "${mp}" 2>/dev/null
+	done
+	rmdir "${mp}" 2>/dev/null
+	return 1
+}
+
+masi_bootlog_mount_boot() {
+	local dev
+
+	[ -d "${MASIBOOT_MNT}" ] || mkdir -p "${MASIBOOT_MNT}"
+	mountpoint -q "${MASIBOOT_MNT}" 2>/dev/null && return 0
+
+	dev="$(masi_bootlog_find_dev)" || return 1
+	mount -t vfat -o rw "${dev}" "${MASIBOOT_MNT}" 2>/dev/null || \
+	mount -t exfat -o rw "${dev}" "${MASIBOOT_MNT}" 2>/dev/null || \
+	mount -o rw "${dev}" "${MASIBOOT_MNT}" 2>/dev/null || return 1
+	return 0
+}
+
+masi_bootlog_start_session() {
+	masi_bootlog_mount_boot || return 1
+	: > "${MASIBOOT_LOG}"
+	masi_bootlog_append_header "local-premount"
+	masi_bootlog_append_dmesg "premount-full"
+	sync "${MASIBOOT_MNT}" 2>/dev/null || sync
+	return 0
+}
+
+masi_bootlog_start_daemon() {
+	(
+		while true; do
+			sleep 2
+			mountpoint -q "${MASIBOOT_MNT}" 2>/dev/null || masi_bootlog_mount_boot || continue
+			dmesg -c >> "${MASIBOOT_LOG}" 2>/dev/null
+			sync "${MASIBOOT_MNT}" 2>/dev/null || sync
+		done
+	) &
+	echo $! > "${MASIBOOT_PID}"
+}
+
+masi_bootlog_stop_daemon() {
+	local pid
+
+	[ -f "${MASIBOOT_PID}" ] || return 0
+	read -r pid < "${MASIBOOT_PID}" 2>/dev/null
+	[ -n "${pid}" ] && kill "${pid}" 2>/dev/null
+	wait "${pid}" 2>/dev/null
+	rm -f "${MASIBOOT_PID}"
+}
+
+masi_bootlog_finalize() {
+	masi_bootlog_stop_daemon
+	masi_bootlog_mount_boot || return 0
+	masi_bootlog_append_header "local-bottom"
+	masi_bootlog_append_dmesg "bottom-final"
+	{
+		echo "ended: $(masi_bootlog_ts)"
+		echo "===== end MaSi boot log ====="
+		echo
+	} >> "${MASIBOOT_LOG}"
+	sync "${MASIBOOT_MNT}" 2>/dev/null || sync
+	return 0
+}

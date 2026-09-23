@@ -1,0 +1,138 @@
+#!/bin/bash
+# Grow the home partition (p3 / LABEL=home) to fill the SD/UFS, then resize ext4.
+# SteamOS PC-style: root stays fixed, home expands on first boot. No reboot.
+# Do not stamp on failure — retry next boot.
+set -u
+
+STAMP_DIR=/var/lib/steamos-sm8550
+STAMP="${STAMP_DIR}/home-expanded"
+LOG=/var/log/steamos-sm8550-expand-home.log
+
+mkdir -p "$STAMP_DIR" /var/log
+exec >>"$LOG" 2>&1
+
+ts() { date -Iseconds; }
+log() { printf '%s %s\n' "$(ts)" "$*"; }
+
+log "=== expand-home start ==="
+
+if [[ -f "$STAMP" ]]; then
+  log "marker ${STAMP} present — skip"
+  exit 0
+fi
+
+if ! command -v resize2fs >/dev/null 2>&1; then
+  log "ERROR: resize2fs missing — skip (will retry)"
+  exit 0
+fi
+
+resolve_home() {
+  local src disk
+  src="$(findmnt -no SOURCE /home 2>/dev/null || true)"
+  if [[ -n "$src" && -e "$src" ]]; then
+    src="$(readlink -f "$src")"
+  fi
+  # /home on the same device as / is not the dedicated home partition.
+  disk="$(findmnt -no SOURCE / 2>/dev/null || true)"
+  if [[ -n "$src" && -b "$src" && "$src" != "$disk" ]]; then
+    printf '%s\n' "$src"
+    return 0
+  fi
+  for cand in \
+      /dev/disk/by-label/home \
+      /dev/disk/by-partlabel/HOME \
+      /dev/disk/by-partlabel/home; do
+    if [[ -b "$cand" ]]; then
+      readlink -f "$cand"
+      return 0
+    fi
+  done
+  return 1
+}
+
+HOME_SRC="$(resolve_home || true)"
+if [[ -z "${HOME_SRC}" || ! -b "${HOME_SRC}" ]]; then
+  log "home partition not found yet (LABEL=home / dedicated /home) — retry next boot"
+  exit 0
+fi
+
+case "${HOME_SRC}" in
+  /dev/mapper/*|/dev/dm-*|/dev/loop*)
+    log "home is mapper/loop (${HOME_SRC}) — skip"
+    mkdir -p "$STAMP_DIR"
+    touch "$STAMP"
+    exit 0
+    ;;
+esac
+
+FSTYPE="$(blkid -o value -s TYPE "${HOME_SRC}" 2>/dev/null || true)"
+if [[ "${FSTYPE}" != ext4 && "${FSTYPE}" != ext3 && "${FSTYPE}" != ext2 ]]; then
+  log "home fstype=${FSTYPE:-unknown} — only ext* supported, skip"
+  mkdir -p "$STAMP_DIR"
+  touch "$STAMP"
+  exit 0
+fi
+
+PART_BASE="$(basename "${HOME_SRC}")"
+PART_SYS="/sys/class/block/${PART_BASE}/partition"
+if [[ ! -f "${PART_SYS}" ]]; then
+  log "ERROR: ${HOME_SRC} is not a partition node — retry next boot"
+  exit 0
+fi
+PART_NUM="$(cat "${PART_SYS}")"
+
+DISK_NAME="$(lsblk -no PKNAME "${HOME_SRC}" 2>/dev/null | head -1 || true)"
+if [[ -z "${DISK_NAME}" ]]; then
+  DISK_NAME="${PART_BASE%p${PART_NUM}}"
+  DISK_NAME="${DISK_NAME%${PART_NUM}}"
+fi
+DISK="/dev/${DISK_NAME}"
+if [[ ! -b "${DISK}" ]]; then
+  log "ERROR: parent disk ${DISK} not a block device — retry next boot"
+  exit 0
+fi
+
+log "home SOURCE=${HOME_SRC} disk=${DISK} part=${PART_NUM}"
+
+if command -v growpart >/dev/null 2>&1; then
+  log "growpart ${DISK} ${PART_NUM}"
+  set +e
+  GROW_OUT="$(growpart "${DISK}" "${PART_NUM}" 2>&1)"
+  GROW_RC=$?
+  set -e
+  printf '%s\n' "${GROW_OUT}"
+  if [[ "${GROW_RC}" -eq 0 ]]; then
+    log "partition grew"
+  elif [[ "${GROW_RC}" -eq 1 ]] || printf '%s\n' "${GROW_OUT}" | grep -qi 'NOCHANGE'; then
+    log "partition already at max (or NOCHANGE)"
+  else
+    log "WARN: growpart rc=${GROW_RC} — still attempting resize2fs"
+  fi
+else
+  log "growpart missing — sfdisk fallback"
+  echo ", +" | sfdisk --no-reread -N "${PART_NUM}" "${DISK}" || true
+fi
+
+udevadm settle 2>/dev/null || true
+partx -u "${DISK}" 2>/dev/null || true
+sleep 0.2
+
+log "resize2fs ${HOME_SRC}"
+set +e
+RESIZE_OUT="$(resize2fs "${HOME_SRC}" 2>&1)"
+RESIZE_RC=$?
+set -e
+printf '%s\n' "${RESIZE_OUT}"
+if [[ "${RESIZE_RC}" -ne 0 ]]; then
+  if ! printf '%s\n' "${RESIZE_OUT}" | grep -qiE 'Nothing to do|already|is already'; then
+    log "WARN: resize2fs rc=${RESIZE_RC} — will retry next boot"
+    log "=== expand-home incomplete ==="
+    exit 0
+  fi
+fi
+
+mkdir -p "$STAMP_DIR"
+touch "$STAMP"
+log "wrote ${STAMP}"
+log "=== expand-home done (no reboot) ==="
+exit 0

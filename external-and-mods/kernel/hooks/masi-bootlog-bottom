@@ -1,0 +1,24 @@
+#!/bin/sh
+# Initramfs local-bottom: finalize /boot/masi-boot.log before switch_root.
+
+PREREQ=""
+prereqs() {
+	echo "$PREREQ"
+}
+
+case "$1" in
+prereqs)
+	prereqs
+	exit 0
+	;;
+esac
+
+. /scripts/functions
+
+. /scripts/masi-bootlog-core
+
+masi_bootlog_enabled || exit 0
+
+log_begin_msg "MaSi boot log: finalizing"
+masi_bootlog_finalize && log_success_msg "MaSi boot log saved" || \
+	log_warning_msg "MaSi boot log: finalize failed"

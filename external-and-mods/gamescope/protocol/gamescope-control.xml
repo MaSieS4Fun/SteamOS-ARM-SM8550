@@ -1,0 +1,147 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<protocol name="gamescope_control">
+
+  <copyright>
+    Copyright © 2023 Valve Corporation
+
+    Permission is hereby granted, free of charge, to any person obtaining a
+    copy of this software and associated documentation files (the "Software"),
+    to deal in the Software without restriction, including without limitation
+    the rights to use, copy, modify, merge, publish, distribute, sublicense,
+    and/or sell copies of the Software, and to permit persons to whom the
+    Software is furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice (including the next
+    paragraph) shall be included in all copies or substantial portions of the
+    Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+    THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+    FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+    DEALINGS IN THE SOFTWARE.
+  </copyright>
+
+  <description summary="gamescope-specific protocol">
+    This is a private Gamescope protocol. Regular Wayland clients must not use
+    it.
+  </description>
+
+  <interface name="gamescope_control" version="6">
+    <request name="destroy" type="destructor"></request>
+
+    <enum name="feature">
+      <description summary="gamescope feature types">
+        Enum of the features supported by Gamescope.
+      </description>
+      <entry name="done" value="0" summary="sent at the end of the feature list"/>
+      <entry name="reshade_shaders" value="1"/>
+      <entry name="display_info" value="2"/>
+      <entry name="pixel_filter" value="3"/>
+      <entry name="refresh_cycle_only_change_refresh_rate" value="4"/>
+      <entry name="mura_correction" value="5"/>
+      <entry name="look" value="6"/>
+      <entry name="perf_query" value="7"/>
+    </enum>
+
+    <event name="feature_support">
+      <description summary="feature supported">
+        Says whether a feature is supported and the version.
+      </description>
+      <arg name="feature" type="uint" summary="one of the enum features"/>
+      <arg name="version" type="uint" summary="feature version"/>
+      <arg name="flags" type="uint" summary="feature flags"/>
+    </event>
+
+    <enum name="display_flag" bitfield="true" since="2">
+      <entry name="internal_display" value="0x1"/>
+      <entry name="supports_hdr" value="0x2"/>
+      <entry name="supports_vrr" value="0x4"/>
+    </enum>
+
+    <event name="active_display_info" since="2">
+      <arg name="connector_name" type="string"/>
+      <arg name="display_make" type="string"/>
+      <arg name="display_model" type="string"/>
+      <arg name="display_flags" type="uint" enum="display_flag" summary="combination of 'display_flag' values"/>
+      <arg name="valid_refresh_rates" type="array" summary="valid refresh rates for the display for the purposes of combined fps limiting + refresh. empty if fixed at a mode. 32-bit unsigned integers."/>
+    </event>
+
+    <enum name="target_refresh_cycle_flag" bitfield="true" since="2">
+      <entry name="internal_display" value="0x1" summary="Whether we should change the target refresh cycle under external/internal display"/>
+      <entry name="allow_refresh_switching" value="0x2" summary="Whether or not to allow refresh rate switching"/>
+      <entry name="only_change_refresh_rate" value="0x4" summary="Only change refresh rate but don't apply frame limiter fps cap"/>
+    </enum>
+
+    <request name="set_app_target_refresh_cycle" since="2">
+      <arg name="fps" type="uint" summary="application's target refresh cycle in frames-per-second. 0 = disabled/native"></arg>
+      <arg name="flags" type="uint" enum="target_refresh_cycle_flag" summary="combination of 'target_refresh_cycle_flag' values"/>
+    </request>
+
+    <enum name="screenshot_type" since="3">
+      <entry name="base_plane_only" value="1" summary="Just the game w/ no display color mgmt"/>
+      <entry name="all_real_layers" value="2" summary="Just the game + overlays w/ no display color mgmt"/>
+      <entry name="full_composition" value="3" summary="Every layer w/ no display color mgmt and no mura"/>
+      <entry name="screen_buffer" value="4" summary="The buffer displayed on-screen - 1:1"/>
+    </enum>
+
+    <enum name="screenshot_flags" bitfield="true" since="3">
+      <entry name="dummy" value="0x1"/>
+    </enum>
+
+    <request name="take_screenshot" since="3">
+      <arg name="path" type="string" summary="Path to write the screenshot. Extension of the file determines the format"></arg>
+      <arg name="type" type="uint" enum="screenshot_type" summary="Type of screenshot to save"></arg>
+      <arg name="flags" type="uint" enum="screenshot_flags" summary="combination of 'screenshot_flags' values"></arg>
+    </request>
+
+    <event name="screenshot_taken" since="3">
+      <arg name="path" type="string" summary="Path to written screenshot"></arg>
+    </event>
+
+    <enum name="display_type_flags" bitfield="true" since="4">
+      <entry name="internal_display" value="0x1" summary="The internal display of the device"/>
+      <entry name="external_display" value="0x2" summary="The external display attached to the device"/>
+    </enum>
+
+    <enum name="display_sleep_flags" bitfield="true" since="4">
+      <entry name="sleep" value="0x1" summary="Go to sleep... zzz... (Conflicts with wake)"/>
+      <entry name="wake" value="0x2" summary="Wake up! (Conflicts with sleep)"/>
+    </enum>
+
+    <request name="display_sleep" since="4">
+      <description summary="Attempts to make the display go to sleep/idle"></description>
+      <arg name="display_type" type="uint" enum="display_type_flags" summary="display type"></arg>
+      <arg name="flags" type="uint" enum="display_sleep_flags" summary="sleep flags"></arg>
+    </request>
+
+    <enum name="look_flags" bitfield="true" since="5">
+      <entry name="dummy" value="0x1"/>
+    </enum>
+
+    <request name="set_look" since="5">
+      <description summary="Sets a look for the screen based on a 3D LUT."></description>
+      <arg name="lut3d_g22" type="fd" summary="file-descriptor containing the data for the look for Gamma 2.2. Expects .cube format"></arg>
+      <arg name="lut3d_pq" type="fd" summary="file-descriptor containing the data for the look for PQ. Expects .cube format"></arg>
+      <arg name="flags" type="uint" enum="look_flags" summary="look flags"></arg>
+    </request>
+
+    <request name="unset_look" since="5">
+      <description summary="Unsets the current look."></description>
+    </request>
+
+    <request name="request_app_performance_stats" since="6">
+      <description summary="Asks the compositor to send the most recent performance stats"></description>
+      <arg name="app_id" type="uint" summary="Appid "></arg>
+    </request>
+
+    <event name="app_performance_stats" since="6">
+      <arg name="app_id" type="uint" summary="Appid for this request"></arg>
+      <arg name="frametime_ns_lo" type="uint" summary="Time delta between the two most recent frames"></arg>
+      <arg name="frametime_ns_hi" type="uint" summary="frametime_ns high bits"></arg>
+    </event>
+
+  </interface>
+</protocol>

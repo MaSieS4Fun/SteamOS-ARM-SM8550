@@ -1,0 +1,6 @@
+*.tar.gz
+*.deb
+*.rpm
+*.pkg.tar*
+libiio-src/
+extract/

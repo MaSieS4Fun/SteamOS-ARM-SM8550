@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=MESA Easy Manager
+Comment=Switch Freedreno Vulkan (libvulkan_freedreno.so) versions
+Exec=python3 run.py
+Path=/home/odin2/Proyectos/MESA-Easy-Manager/MESA-Easy-Manager
+Icon=applications-graphics
+Terminal=false
+Categories=System;Settings;
+StartupNotify=true

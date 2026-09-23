@@ -1,0 +1,17 @@
+Sesión gaming (gamescope + Steam)
+=================================
+
+Valve Frame no usa una sesión X11 de escritorio. Usa gamescope
+(Wayland) y Steam pinta la UI en Xwayland. Deck y el sistema
+custom hacen lo mismo: GAMESCOPE_WAYLAND_DISPLAY=gamescope-0,
+XDG_SESSION_TYPE vacío, Qt/CEF en xcb.
+
+xcb no es "forzar X11". Es el puente de Steam dentro de gamescope.
+
+Este arranque ya no lleva console=tty0 ni drm.debug en el KERNEL.
+Espera 30–60 segundos: Steam tarda en pintar Gamepad UI.
+Si apagas a los 5 segundos solo verás el compositor vacío.
+
+Logs si algo falla:
+  ~/.local/share/Steam/logs/console_log.txt
+  journalctl --user -u gamescope-session -u steam

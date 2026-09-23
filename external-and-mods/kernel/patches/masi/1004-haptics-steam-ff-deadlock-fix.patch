@@ -1,0 +1,43 @@
+diff -Naur a/drivers/input/misc/qcom-hv-haptics.c b/drivers/input/misc/qcom-hv-haptics.c
+--- a/drivers/input/misc/qcom-hv-haptics.c
++++ b/drivers/input/misc/qcom-hv-haptics.c
+@@ -1692,6 +1692,9 @@ static int haptics_wait_brake_complete(struct haptics_chip *chip)
+ 	if (chip->hw_type != HAP525_HV)
+ 		return 0;
+ 
++	if (!play->brake || play->brake->disabled)
++		return 0;
++
+ 	t_lra_us = (chip->config.cl_t_lra_us) ?
+ 		chip->config.cl_t_lra_us : chip->config.t_lra_us;
+ 
+@@ -1701,6 +1704,7 @@ static int haptics_wait_brake_complete(struct haptics_chip *chip)
+ 	brake_length_us += t_lra_us;
+ 	delay_us = t_lra_us / 2;
+ 	timeout = brake_length_us / delay_us + 1;
++	timeout = min_t(u32, timeout, 32);
+ 	dev_dbg(chip->dev, "wait %d us for brake pattern to complete\n", brake_length_us);
+ 
+ 	/* poll HPWR_DISABLED to guarantee the brake pattern has been played completely */
+@@ -1723,7 +1727,7 @@ static int haptics_wait_brake_complete(struct haptics_chip *chip)
+ 
+ 	if (timeout == 0) {
+ 		dev_warn(chip->dev, "poll HPWR_DISABLED failed after stopped play\n");
+-		return haptics_toggle_module_enable(chip);
++		return 0;
+ 	}
+ 
+ 	return 0;
+@@ -2869,6 +2873,12 @@ static int haptics_erase(struct input_dev *dev, int effect_id)
+ 	dev_dbg(chip->dev, "erase effect, really stop play\n");
+ 	mutex_lock(&play->lock);
+ 	cancel_delayed_work_sync(&chip->stop_work);
++	if (!chip->chip_is_playing) {
++		chip->chip_effect_loaded = false;
++		mutex_unlock(&play->lock);
++		return 0;
++	}
++
+ 	if ((play->pattern_src == FIFO) &&
+ 			atomic_read(&play->fifo_status.is_busy)) {
+ 		if (atomic_read(&play->fifo_status.written_done) == 0) {

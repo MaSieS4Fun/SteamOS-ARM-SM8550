@@ -1,0 +1,76 @@
+{
+  "name": "decky-lsfg-vk",
+  "version": "0.12.2",
+  "description": "Use Lossless Scaling on the Steam Deck using the lsfg-vk vulkan layer",
+  "type": "module",
+  "scripts": {
+    "build": "rollup -c",
+    "watch": "rollup -c -w",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/xXJSONDeruloXx/decky-lsfg-vk.git"
+  },
+  "keywords": [
+    "decky",
+    "plugin",
+    "steam-deck",
+    "deck",
+    "lossless-scaling",
+    "frame-generation",
+    "lsfg-vk",
+    "framegen"
+  ],
+  "author": "Kurt Himebauch <dkh4830@gmail.com>",
+  "license": "BSD-3-Clause",
+  "bugs": {
+    "url": "https://github.com/xXJSONDeruloXx/decky-lossless-scaling-vk/issues"
+  },
+  "homepage": "https://github.com/xXJSONDeruloXx/decky-lossless-scaling-vk#readme",
+  "devDependencies": {
+    "@decky/rollup": "^1.0.1",
+    "@decky/ui": "^4.7.2",
+    "@types/react": "18.3.3",
+    "@types/react-dom": "18.3.0",
+    "@types/webpack": "^5.28.5",
+    "rollup": "^4.22.5",
+    "typescript": "^5.6.2"
+  },
+  "dependencies": {
+    "@decky/api": "^1.1.2",
+    "react-icons": "^5.3.0",
+    "tslib": "^2.7.0"
+  },
+  "remote_binary_bundling" : true,
+  "remote_binary": [
+    {
+      "name": "lsfg-vk_noui.zip",
+      "url": "https://github.com/xXJSONDeruloXx/lsfg-vk/releases/download/fp16-test-2/lsfg-vk_noui.zip",
+      "sha256hash": "a406b3730144c2011e2c2acd3cf44f3ec6c048ee86099bc9c3ac90aa1515e5ec"
+    },
+    {
+      "name": "org.freedesktop.Platform.VulkanLayer.lsfg_vk_23.08.flatpak",
+      "url": "https://github.com/PancakeTAS/lsfg-vk/releases/download/v0.9.0/org.freedesktop.Platform.VulkanLayer.lsfg_vk_23.08.flatpak",
+      "sha256hash": "8381d1eff0b0786af5a0e66955521eadec783866f73b9b1aa4664c952ed601a4"
+    },
+    {
+      "name": "org.freedesktop.Platform.VulkanLayer.lsfg_vk_24.08.flatpak",
+      "url": "https://github.com/PancakeTAS/lsfg-vk/releases/download/v0.9.0/org.freedesktop.Platform.VulkanLayer.lsfg_vk_24.08.flatpak",
+      "sha256hash": "70ea6d9d2a8adad63b8e5c2c3d94a636764ad4d0266ce9f37cb9dc7943d8fc3a"
+    },
+    {
+      "name": "org.freedesktop.Platform.VulkanLayer.lsfg_vk_25.08.flatpak",
+      "url": "https://github.com/PancakeTAS/lsfg-vk/releases/download/v1.0.0/org.freedesktop.Platform.VulkanLayer.lsfg_vk_25.08.flatpak",
+      "sha256hash": "0651bda96751ef0f1314a5179585926a0cd354476790ca2616662c39fe6fae54"
+    }
+  ],
+  "pnpm": {
+    "peerDependencyRules": {
+      "ignoreMissing": [
+        "react",
+        "react-dom"
+      ]
+    }
+  }
+}

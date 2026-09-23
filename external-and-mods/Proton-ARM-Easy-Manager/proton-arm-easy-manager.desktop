@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Proton ARM Easy Manager
+Comment=Install and manage ARM64 Proton builds for Steam, Lutris and Heroic
+Exec=python3 run.py gui
+Icon=eparm
+Terminal=false
+Categories=Utility;Game;
+Keywords=Proton;Steam;ARM;Wine;Lutris;Heroic;
+StartupNotify=true

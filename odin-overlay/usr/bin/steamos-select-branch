@@ -1,0 +1,55 @@
+#!/bin/bash
+# Handheld: atomupd-manager has no RAUC A/B here and hangs Steam (~3s spinner).
+# Expose the official Steam branch API (rel / beta / preview) and persist the
+# choice without talking to atomupd.
+set -euo pipefail
+
+STATE_DIR=/var/lib/steamos
+STATE="${STATE_DIR}/selected-branch"
+
+canon() {
+  case "${1:-}" in
+    rel|stable) echo rel ;;
+    rc) echo rc ;;
+    beta|bc) echo beta ;;
+    preview|pc) echo preview ;;
+    main|staging) echo main ;;
+    *) echo "${1:-}" ;;
+  esac
+}
+
+current() {
+  if [[ -s "$STATE" ]]; then
+    canon "$(tr -d '[:space:]' <"$STATE")"
+  else
+    echo rel
+  fi
+}
+
+set_branch() {
+  local b
+  b="$(canon "$1")"
+  mkdir -p "$STATE_DIR"
+  printf '%s\n' "$b" >"$STATE"
+}
+
+if [[ $# -eq 1 ]]; then
+  case "$1" in
+    -c)
+      current
+      exit 0
+      ;;
+    -l)
+      # Stable + beta + the more-unstable preview channel (Steam hides the rest).
+      printf '%s\n' rel beta preview
+      exit 0
+      ;;
+    rel|stable|rc|beta|bc|preview|pc|main|staging)
+      set_branch "$1"
+      exit 0
+      ;;
+  esac
+fi
+
+echo "Usage: steamos-select-branch <-c|-l|rel|rc|beta|bc|preview|pc|main>" 1>&2
+exit 1

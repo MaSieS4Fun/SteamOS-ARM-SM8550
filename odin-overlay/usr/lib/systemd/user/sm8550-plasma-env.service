@@ -1,0 +1,9 @@
+[Unit]
+Description=SM8550 Plasma Wayland environment
+DefaultDependencies=no
+Before=plasma-core.target plasma-workspace.target plasma-workspace-wayland.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/lib/steamos/sm8550-prepare-plasma

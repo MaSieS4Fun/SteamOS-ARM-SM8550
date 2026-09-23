@@ -1,0 +1,39 @@
+From: MaSi-OS <masies@local>
+Subject: [PATCH] drm/msm/a6xx: A740 GMU forbid runtime PM + report BW vote errors
+
+Idle→wake via GMU runtime autosuspend re-issues GX_BW_PERF_VOTE and is a
+common trigger for HFI desync freezes on Adreno 740 (SM8550). Forbid GMU
+runtime PM for the A740 family so votes only happen on real freq changes.
+
+Also surface a6xx_hfi_set_freq() failures instead of ignoring them.
+
+---
+--- a/drivers/gpu/drm/msm/adreno/a6xx_gmu.c	2026-08-13 00:01:23.188801064 +0200
++++ b/drivers/gpu/drm/msm/adreno/a6xx_gmu.c	2026-08-13 00:01:23.191739146 +0200
+@@ -219,7 +219,11 @@
+ 		return;
+ 
+ 	if (!gmu->legacy) {
+-		a6xx_hfi_set_freq(gmu, perf_index, bw_index);
++		ret = a6xx_hfi_set_freq(gmu, perf_index, bw_index);
++		if (ret)
++			dev_err_ratelimited(gmu->dev,
++				"GMU GX_BW_PERF_VOTE failed: %d (perf=%u bw=0x%x)\n",
++				ret, perf_index, bw_index);
+ 		/* With Bandwidth voting, we now vote for all resources, so skip OPP set */
+ 		if (!bw_index)
+ 			dev_pm_opp_set_opp(&gpu->pdev->dev, opp);
+@@ -2254,6 +2258,13 @@
+ 		GMU_IDLE_STATE_IFPC : GMU_IDLE_STATE_ACTIVE;
+ 
+ 	pm_runtime_enable(gmu->dev);
++	/*
++	 * A740: runtime suspend of the GMU wakes with a burst of
++	 * GX_BW_PERF_VOTE HFI traffic that often times out and desyncs the
++	 * response queue. Keep GMU powered (kernel-side; no userspace keepalive).
++	 */
++	if (adreno_is_a740_family(adreno_gpu))
++		pm_runtime_forbid(gmu->dev);
+ 
+ 	/* Get the list of clocks */
+ 	ret = a6xx_gmu_clocks_probe(gmu);

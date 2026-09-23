@@ -1,0 +1,22 @@
+{
+  "config":{
+    "hw_platform": ["HDK"],
+    "platform_subtype_id": ["0", "1"],
+    "soc_id": ["536", "603"]
+  },
+  "lsm6dsv_0_platform":{
+    "owner": "lsm6dsv",
+    ".orient":{
+      "owner": "lsm6dsv",
+      "x":{ "type": "str", "ver": "0",
+        "data": "-y"
+      },
+      "y":{ "type": "str", "ver": "0",
+        "data": "+x"
+      },
+      "z":{ "type": "str", "ver": "0",
+        "data": "+z"
+      }
+    }
+  }
+}

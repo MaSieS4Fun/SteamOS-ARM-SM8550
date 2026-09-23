@@ -1,0 +1,56 @@
+#!/bin/bash
+# MaSi gaming profile: max performance + UFS awake (no energy parking).
+# - UFS: power on, no clk-gate/scale (SD or internal STORAGE root)
+# - CPU: performance governor on all policies
+# - GPU: Adreno devfreq → performance; keep GPU/GMU runtime PM on
+#   (autosuspend → idle wake resets GMU freq and floods GX_BW_PERF_VOTE)
+# Does not disable UFS storage or change Mini boot.
+set -euo pipefail
+
+UFS_HOST="${UFS_HOST:-/sys/devices/platform/soc@0/1d84000.ufshc}"
+
+if [[ -d "${UFS_HOST}" ]]; then
+	if [[ -w "${UFS_HOST}/power/control" ]]; then
+		echo on >"${UFS_HOST}/power/control" || true
+	fi
+	for f in clkgate_enable clkscale_enable; do
+		if [[ -w "${UFS_HOST}/${f}" ]]; then
+			echo 0 >"${UFS_HOST}/${f}" || true
+		fi
+	done
+fi
+
+for host in /sys/class/scsi_host/host*/power/control; do
+	[[ -w "${host}" ]] || continue
+	echo on >"${host}" || true
+done
+
+for power in /sys/block/sd*/device/power/control; do
+	[[ -w "${power}" ]] || continue
+	echo on >"${power}" || true
+done
+
+for gov in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
+	[[ -w "${gov}" ]] || continue
+	echo performance >"${gov}" || true
+done
+
+for gov in \
+	/sys/devices/platform/soc@0/3d00000.gpu/devfreq/3d00000.gpu/governor \
+	/sys/class/devfreq/3d00000.gpu/governor; do
+	[[ -w "${gov}" ]] || continue
+	echo performance >"${gov}" || true
+done
+
+# Keep Adreno + GMU out of runtime suspend so idle→wake does not re-issue
+# GX_BW_PERF_VOTE (slow ACK → HFI desync / freezes on A740).
+for power in \
+	/sys/devices/platform/soc@0/3d00000.gpu/power/control \
+	/sys/devices/platform/soc@0/3d00000.gmu/power/control \
+	/sys/bus/platform/devices/3d00000.gpu/power/control \
+	/sys/bus/platform/devices/3d00000.gmu/power/control; do
+	[[ -w "${power}" ]] || continue
+	echo on >"${power}" || true
+done
+
+exit 0

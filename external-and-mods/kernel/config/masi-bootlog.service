@@ -1,0 +1,14 @@
+[Unit]
+Description=MaSi debug boot log (append dmesg to /boot/masi-boot.log)
+DefaultDependencies=no
+After=local-fs.target
+Before=display-manager.service
+ConditionKernelCommandLine=masi.bootlog=1
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/lib/masi/masi-bootlog-continue.sh
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,28 @@
+#!/bin/bash
+# Official steamosctl wrapper. Prepare Wayland env before desktop mode so
+# Plasma does not inherit Game Mode QT_QPA_PLATFORM=xcb.
+set -e
+
+session="${1:-gamescope}"
+
+case "$session" in
+  plasma-persistent)
+    /usr/lib/steamos/sm8550-prepare-plasma
+    steamosctl set-default-login-mode desktop
+    steamosctl set-default-desktop-session plasma.desktop
+    steamosctl switch-to-desktop-mode
+    ;;
+  plasma)
+    /usr/lib/steamos/sm8550-prepare-plasma
+    steamosctl set-default-desktop-session plasma.desktop
+    steamosctl switch-to-desktop-mode
+    ;;
+  gamescope)
+    steamosctl set-default-login-mode game
+    steamosctl switch-to-game-mode
+    ;;
+  *)
+    echo >&2 "!! Unrecognized session '$session'"
+    exit 1
+    ;;
+esac

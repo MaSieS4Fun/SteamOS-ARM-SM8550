@@ -1,0 +1,38 @@
+#!/bin/sh
+# Start the user gamescope-session.target. Session type stays unset so Steam
+# DisplayManager uses GAMESCOPE_WAYLAND_DISPLAY (wayland: modeset).
+
+TARGET="${1:-gamescope-session.target}"
+
+systemctl --user stop graphical-session.target
+systemctl --user reset-failed
+
+unset XDG_SESSION_TYPE
+export XDG_CURRENT_DESKTOP=gamescope
+export XDG_SESSION_DESKTOP=gamescope
+export DESKTOP_SESSION=gamescope
+export QT_QPA_PLATFORM=xcb
+
+# QT_QPA_PLATFORM=xcb stays in this process and steam.service only.
+# Importing it into the user manager made Switch to Desktop start Plasma
+# on xcb with no X server → black screen.
+systemctl --user unset-environment XDG_SESSION_TYPE WAYLAND_DISPLAY QT_QPA_PLATFORM || true
+systemctl --user set-environment XDG_CURRENT_DESKTOP=gamescope || true
+systemctl --user set-environment XDG_SESSION_DESKTOP=gamescope || true
+systemctl --user set-environment DESKTOP_SESSION=gamescope || true
+
+dbus-update-activation-environment --systemd DESKTOP_SESSION XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP >/dev/null 2>&1 || true
+
+systemctl --user set-environment XDG_DESKTOP_PORTAL_DIR="/usr/share/xdg-desktop-portal/gamescope-portals"
+systemctl --user set-environment "GAMESCOPE_SESSION_TARGET=${TARGET}"
+systemctl --user unset-environment DISPLAY XAUTHORITY WAYLAND_DISPLAY || true
+
+trap "systemctl --user stop ${TARGET}" HUP INT TERM
+
+systemctl --user --wait start "${TARGET}" &
+wait
+logger Gamescope Session Ended - Performing Final Cleanup
+
+systemctl --user unset-environment QT_QPA_PLATFORM GAMESCOPE_WAYLAND_DISPLAY GAMESCOPE_SESSION_TARGET || true
+systemctl --user stop graphical-session-pre.target
+logger Gamescope Session Ended - Cleanup Complete

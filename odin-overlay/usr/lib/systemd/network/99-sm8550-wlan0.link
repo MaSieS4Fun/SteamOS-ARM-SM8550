@@ -1,0 +1,7 @@
+[Match]
+Type=wlan
+
+[Link]
+# Frame/Steam look for wlan0. Kernel names the WCN7850 wlp1s0.
+# Overrides 80-iwd.link NamePolicy=keep kernel.
+Name=wlan0

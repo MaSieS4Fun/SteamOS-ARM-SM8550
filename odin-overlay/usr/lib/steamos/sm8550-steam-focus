@@ -1,0 +1,29 @@
+#!/bin/bash
+# gamescope --steam only focuses windows tagged STEAM_GAME.
+# If Steam never sets the atom, Gamepad UI stays unfocused (black nested
+# surface) while the client is already running.
+set +e
+export DISPLAY="${DISPLAY:-:0}"
+command -v xprop >/dev/null 2>&1 || exit 0
+command -v xwininfo >/dev/null 2>&1 || exit 0
+
+tag() {
+  local ids id
+  ids="$(xwininfo -root -tree 2>/dev/null | awk '/[Ss]team/{
+    if (match($0, /0x[0-9a-fA-F]+/)) print substr($0, RSTART, RLENGTH)
+  }' | sort -u)"
+  for id in $ids; do
+    [[ -n "$id" ]] || continue
+    if ! xprop -id "$id" STEAM_GAME 2>/dev/null | grep -q 'STEAM_GAME(CARDINAL)'; then
+      xprop -id "$id" -f STEAM_GAME 32c -set STEAM_GAME 769 2>/dev/null || true
+      xprop -id "$id" -f STEAM_OVERLAY 32c -set STEAM_OVERLAY 0 2>/dev/null || true
+      xprop -id "$id" -f STEAM_BIGPICTURE 32c -set STEAM_BIGPICTURE 1 2>/dev/null || true
+    fi
+  done
+}
+
+for _i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+  sleep 2
+  tag
+done
+exit 0

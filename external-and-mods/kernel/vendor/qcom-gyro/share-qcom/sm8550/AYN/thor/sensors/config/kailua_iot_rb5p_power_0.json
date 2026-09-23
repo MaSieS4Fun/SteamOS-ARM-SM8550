@@ -1,0 +1,16 @@
+{
+  "config":{
+    "hw_platform": ["HDK"],
+    "platform_subtype_id": ["2"],
+    "soc_id": ["603"]
+  },
+  "power":{
+    "owner": "power_manager",
+    ".island":{
+      "owner": "power_manager",
+      "enable_island":{ "type": "int", "ver": "0",
+        "data": "0"
+      }
+    }
+  }
+}

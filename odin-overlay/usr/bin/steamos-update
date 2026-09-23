@@ -1,0 +1,152 @@
+#!/usr/bin/env bash
+# Steam Gamepad UI OS-update hook. This image has no RAUC/atomupd payload.
+#
+#   --supports-duplicate-detection  → 0
+#   --mark-oobe-only                → stamp CompletedOOBE, exit 0
+#   check                           → 7 (up to date)
+#   apply (first OOBE)              → 0 + stamp + restart steam.service
+#   apply (again / after login)     → 7
+set -uo pipefail
+
+STEAM_HOME="${STEAM_HOME:-/home/steamos}"
+LOGINUSERS="${STEAM_HOME}/.local/share/Steam/config/loginusers.vdf"
+MARKER=/var/lib/steamos-sm8550/oobe-os-update-acked
+USER_MARKER="${STEAM_HOME}/.local/share/Steam/.oobe-os-update-acked"
+REG_STEAM="${STEAM_HOME}/.steam/registry.vdf"
+REG_LOCAL="${STEAM_HOME}/.local/share/Steam/registry.vdf"
+
+mark_oobe_complete() {
+  python3 - "$@" <<'PY' 2>/dev/null || true
+import pathlib, re, sys
+
+WANT = (("CompletedOOBE", "1"), ("CompletedOOBEStage1", "1"))
+DROP = ("ForceOOBE", "ForceOOBEStage2")
+
+def upsert(path: pathlib.Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    text = path.read_text(encoding="utf-8", errors="replace") if path.is_file() else ""
+    if '"Steam"' not in text:
+        lines = "\n".join(f'\t\t\t\t\t"{k}"\t\t"{v}"' for k, v in WANT)
+        text = (
+            '"Registry"\n{\n\t"HKCU"\n\t{\n\t\t"Software"\n\t\t{\n'
+            '\t\t\t"Valve"\n\t\t\t{\n\t\t\t\t"Steam"\n\t\t\t\t{\n'
+            f"{lines}\n"
+            "\t\t\t\t}\n\t\t\t}\n\t\t}\n\t}\n}\n"
+        )
+        path.write_text(text, encoding="utf-8")
+        return
+
+    for k in DROP:
+        text = re.sub(r'^[ \t]*"' + re.escape(k) + r'"[ \t]*"[^"]*"[ \t]*\n', "", text, flags=re.M)
+
+    m = re.search(
+        r'("HKCU"\s*\{.*?^[ \t]*"Steam"\s*\n[ \t]*\{)',
+        text,
+        flags=re.M | re.S,
+    )
+    if not m:
+        m = re.search(r'(^[ \t]*"Steam"\s*\n[ \t]*\{)', text, flags=re.M)
+    if not m:
+        path.write_text(text, encoding="utf-8")
+        return
+
+    head_end = m.end()
+    i = head_end
+    depth = 1
+    while i < len(text) and depth:
+        if text[i] == "{":
+            depth += 1
+        elif text[i] == "}":
+            depth -= 1
+        i += 1
+    block = text[head_end : i - 1]
+    indent = "\t\t\t\t\t"
+    child = re.search(r'\n([ \t]+)"', "\n" + block)
+    if child:
+        indent = child.group(1)
+
+    for k, v in WANT:
+        pat = r'^[ \t]*"' + re.escape(k) + r'"[ \t]*"[^"]*"'
+        if re.search(pat, block, flags=re.M):
+            block = re.sub(pat, f'"{k}"\t\t"{v}"', block, count=1, flags=re.M)
+            block = re.sub(
+                r'^"' + re.escape(k) + r'"\t\t"' + re.escape(v) + r'"',
+                f'{indent}"{k}"\t\t"{v}"',
+                block,
+                count=1,
+                flags=re.M,
+            )
+        else:
+            block = f'\n{indent}"{k}"\t\t"{v}"' + (block if block.startswith("\n") else "\n" + block)
+
+    text = text[:head_end] + block + text[i - 1 :]
+    path.write_text(text, encoding="utf-8")
+
+for p in sys.argv[1:]:
+    upsert(pathlib.Path(p))
+PY
+}
+
+for arg in "$@"; do
+  case "$arg" in
+    --supports-duplicate-detection) exit 0 ;;
+    --mark-oobe-only)
+      mark_oobe_complete "$REG_STEAM" "$REG_LOCAL"
+      exit 0
+      ;;
+  esac
+done
+
+check=0
+for arg in "$@"; do
+  case "$arg" in
+    check) check=1 ;;
+  esac
+done
+
+if [[ "$check" -eq 1 ]]; then
+  exit 7
+fi
+
+oobe=0
+if [[ ! -f "$LOGINUSERS" ]] || ! grep -qs '"AccountName"' "$LOGINUSERS"; then
+  oobe=1
+fi
+
+if [[ "$oobe" -eq 0 ]]; then
+  exit 7
+fi
+
+mkdir -p /var/lib/steamos-sm8550 2>/dev/null || true
+mkdir -p "${STEAM_HOME}/.local/share/Steam" 2>/dev/null || true
+mark_oobe_complete "$REG_STEAM" "$REG_LOCAL"
+
+# Already told Steam this apply succeeded once. A second exit 0 keeps the
+# "calculando el tiempo restante" UI up until a forced power-off.
+if [[ -f "$MARKER" || -f "$USER_MARKER" ]]; then
+  exit 7
+fi
+
+touch "$MARKER" 2>/dev/null || true
+touch "$USER_MARKER" 2>/dev/null || true
+
+# Steam calls this as user steamos (no pkexec). A system unit start fails,
+# and a background `&` dies with the helper. Delay 2s so APPLY 0 is seen
+# first, then restart steam.service — pkill + Restart=on-failure stays dead.
+restart_steam_after_oobe() {
+  local helper=/usr/lib/steamos/sm8550-oobe-restart-steam
+  [[ -x "$helper" ]] || return 0
+  if [[ "$(id -u)" -eq 0 ]]; then
+    systemctl start --no-block sm8550-oobe-restart-steam.service 2>/dev/null && return 0
+    systemd-run --collect --on-active=2s --uid=steamos --unit=sm8550-oobe-restart-steam-run \
+      "$helper" >/dev/null 2>&1 && return 0
+  fi
+  systemd-run --user --collect --on-active=2s --unit=sm8550-oobe-restart-steam-run \
+    "$helper" >/dev/null 2>&1 && return 0
+  # Ignore SIGHUP when Steam's helper parent exits.
+  nohup bash -c "sleep 2; exec '$helper'" >/dev/null 2>&1 &
+  disown $! 2>/dev/null || true
+}
+
+restart_steam_after_oobe
+exit 0

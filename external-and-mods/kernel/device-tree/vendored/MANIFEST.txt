@@ -1,0 +1,18 @@
+# DTB chain — SM8550 reference KERNEL
+# Vendored for universal SM8550 boot (14 slots). See device-tree/vendored/README.md
+
+slot	size	hint	sha256_16
+0	124064		7b77e0254caebd45
+1	143133	ayn,odin2portal	defd58f744461e31
+2	142904	ayn,odin2	b096f505ebfd1698
+3	141240	ayn,odin2mini	81766cfb0670fc68
+4	145242	ayn,thor	10498d0c67ca07c3
+5	143992	retroidpocket,rp6	5f24c4f307d24004
+6	144034	retroidpocket,rp6	411d166b47d2c35d
+7	147421		287751c901b6c527
+8	147794		f498e53cfbbff940
+9	133260	qcom,qcs8550	c571f19975c83b64
+10	133133	qcom,qcs8550	51fd6c18241a0ead
+11	134827	qcom,qcs8550	b08a6b015a636d6c
+12	132786	qcom,qcs8550	c5a0897f25368aef
+13	133464		e816d8c8072366e7

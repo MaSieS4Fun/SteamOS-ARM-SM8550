@@ -1,0 +1,19 @@
+[Unit]
+Description=Grow SteamOS home partition to fill the disk
+DefaultDependencies=no
+Conflicts=shutdown.target
+After=systemd-remount-fs.service
+After=home.mount
+Before=display-manager.service graphical.target
+ConditionPathExists=!/var/lib/steamos-sm8550/home-expanded
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/lib/steamos/steamos-sm8550-expand-home
+TimeoutStartSec=180
+SuccessExitStatus=0
+
+[Install]
+WantedBy=local-fs.target
+WantedBy=multi-user.target

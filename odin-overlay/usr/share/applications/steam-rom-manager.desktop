@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Steam ROM Manager
+Comment=Manage ROMs and add them to Steam
+Exec=steam-rom-manager
+Icon=/usr/share/icons/hicolor/256x256/apps/steam-rom-manager.png
+Type=Application
+Categories=Game;
+Terminal=false
+StartupWMClass=steam-rom-manager

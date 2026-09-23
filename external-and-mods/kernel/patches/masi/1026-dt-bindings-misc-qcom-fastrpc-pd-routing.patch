@@ -1,0 +1,32 @@
+From: MaSi-OS <masi@local>
+Subject: [PATCH] dt-bindings: misc: qcom,fastrpc: add pd-type routing
+
+--- a/Documentation/devicetree/bindings/misc/qcom,fastrpc.yaml	2026-07-17 17:58:00.635452856 +0200
++++ b/Documentation/devicetree/bindings/misc/qcom,fastrpc.yaml	2026-07-17 17:57:45.572886004 +0200
+@@ -45,6 +45,12 @@
+     items:
+       - const: fastrpcglink-apps-dsp
+ 
++  qcom,fastrpc-adsp-sensors-pdr:
++    description:
++      Track the ADSP sensors protection domain and hold sensor FastRPC
++      requests while that protection domain is unavailable.
++    type: boolean
++
+   qcom,non-secure-domain:
+     description:
+       Used to mark the current domain as non-secure.
+@@ -94,6 +100,13 @@
+         description: >
+           A value indicating how many sessions can share this context bank.
+ 
++      qcom,pd-type:
++        $ref: /schemas/types.yaml#/definitions/uint32
++        enum: [1, 2, 3, 7]
++        description: >
++          Qualcomm process type assigned to this context bank: root (1),
++          audio (2), sensors (3), or user (7).
++
+     required:
+       - compatible
+       - reg

@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Return to Gaming Mode
+Comment=Leave Plasma and return to Game Mode
+Exec=bash -c "steamosctl switch-to-game-mode || steamos-session-select gamescope || qdbus org.kde.Shutdown /Shutdown org.kde.Shutdown.logout"
+Icon=steamos-gamemode
+Terminal=false
+Type=Application
+StartupNotify=false
+Categories=Game;

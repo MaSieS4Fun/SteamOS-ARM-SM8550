@@ -1,0 +1,77 @@
+AYN Thor Qualcomm Sensor Core data
+
+The sensor registry inputs in this directory were recovered from the stock
+AYN Thor Android BSP. They select the Kailua HDK SH5001 profile while leaving
+runtime and learned calibration state writable under /userdata.
+
+Stock Android build: Thor_V1.0.0.377_20260206_165408_user
+Stock ADSP family: ADSP.HT.5.8-01329-KAILUA-1
+Hardware platform: HDK
+SoC ID: 603 (QCS8550)
+Physical IMU: Senodia SH5001
+
+The split adsp.mdt/adsp.bXX and adsp_dtb.mdt/adsp_dtb.bXX payloads are taken
+from the same stock Android vendor partition. The generic Odin 2-family ADSP
+image boots on Thor, but it does not contain the SH5001 driver.
+
+Runtime path
+------------
+
+The ADSP/QSH firmware owns the SH5001. hexagonrpcd exposes the QSH file
+services, libqmi/libssc receives SSC reports over QRTR, and ssccli provides a
+raw accelerometer/gyroscope smoke test. The generated registry and learned
+per-unit data live under /userdata/system/qcom-sensors/thor and are never
+overwritten automatically.
+
+The stock registry requests sns_tppe.so as a dynamic DSP sensor library, so
+that one stock payload is supplied under dsp/adsp. The other Android FastRPC
+and sensor HAL helper libraries are not needed for the basic SSC stream.
+
+The SM8550 device tree enables Thor's stock ADSP firmware and the upstream
+ADSP FastRPC channel with SensorsPD/PDR routing. The channel remains a
+qcom,non-secure-domain and normally appears as /dev/fastrpc-adsp. Forcing it
+to the secure-only /dev/fastrpc-adsp-secure node allowed the listeners to open
+but did not make the stock SensorsPD publish its SSC QMI service.
+
+S27qcom-qrtr starts qrtr-ns before any SSC client lookup. S28qcom-sensors then
+generates the registry with the stock HDK/603 filters, starts SensorsPD before
+RootPD, and prefers /dev/fastrpc-adsp (with the secure node retained only as a
+fallback). Both listeners are supervised because their FastRPC nodes disappear
+temporarily during an ADSP or SensorsPD restart. Sensor startup waits for the
+AYN Thor ALSA card so audio finishes binding to the shared ADSP before any
+sensor FastRPC session is opened. S28 publishes a readiness marker only after
+both FastRPC supervisors are alive; S29 will not expose the DSU bridge without
+that marker.
+
+Motion bridge
+-------------
+
+S29qcom-motion exposes the built-in accelerometer and gyroscope as DSU/Cemuhook
+slot 0 on 127.0.0.1:26760. Configgen enables the source for Azahar, Cemu,
+Dolphin, Eden, Ryujinx and Yuzu only while the bridge readiness marker exists.
+The bridge is supervised and automatically restarts after a transient SSC,
+ADSP, or process failure without leaving a stale readiness marker.
+
+The initial Thor coordinate profile maps the stock SH5001 landscape stream into
+the console DSU frame. Cold-boot startup, raw streaming, stationary gyro zero,
+DSU delivery, concurrent AYN Thor audio and supervisor recovery have been
+validated on Thor hardware. Moving-axis tests also confirm that lowering the
+left and right edges produces opposing lateral acceleration and gyro roll with
+the expected DSU polarity. Emulator-side sensitivity still varies by emulator
+and game.
+
+Run `batocera-qcom-motion --check` for a DSU packet check, or
+`batocera-qcom-sensors-test 5` to validate the complete sensor stack.
+
+Calibration
+-----------
+
+Launch "Odin 2 / Thor Sensor Calibration" from the Tools system with the Thor base
+resting still. The guide zeros the gyroscope and then automatically captures
+five base orientations, so no button press is needed while balancing the
+clamshell on an edge and the controls never need to face down. The resulting
+full 3-axis correction compensates offset, gain, and sensor mounting angle.
+The launcher and its image are installed in the persistent Tools directory and
+are refreshed on Thor boots so existing userdata installations receive updates.
+Calibration is stored in
+/userdata/system/qcom-sensors/thor/motion-calibration.ini.

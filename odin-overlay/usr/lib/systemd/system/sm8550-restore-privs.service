@@ -1,0 +1,13 @@
+[Unit]
+Description=Restore setuid root on pkexec/sudo after image copies
+DefaultDependencies=no
+After=local-fs.target
+Before=display-manager.service polkit.service sudo.service multi-user.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/steamos/sm8550-restore-privs
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

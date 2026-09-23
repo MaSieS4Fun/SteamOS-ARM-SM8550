@@ -1,0 +1,13 @@
+[Unit]
+Description=MaSi Qualcomm ADSP and ASoC audio (HDMI/DP)
+DefaultDependencies=no
+After=local-fs.target systemd-modules-load.service
+Before=sound.target pipewire.service pipewire-pulse.service wireplumber.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/lib/masi/masi-qcom-audio-init.sh boot
+
+[Install]
+WantedBy=multi-user.target

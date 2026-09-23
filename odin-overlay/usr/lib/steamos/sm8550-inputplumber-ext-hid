@@ -1,0 +1,105 @@
+#!/bin/bash
+# If a real USB/Bluetooth keyboard or mouse is present, drop InputPlumber's
+# virtual keyboard. Restore it when the last external HID is gone.
+# Never treat deck-uhid (Valve 28de / uhid) as external — that restarts the
+# composite in a loop and Steam never starts.
+set -uo pipefail
+
+LOCK=/run/sm8550-inputplumber-ext-hid.lock
+exec 9>"$LOCK"
+flock 9
+sleep 0.35
+
+is_virtual_or_deck() {
+  local props="$1" name="$2"
+  case "$name" in
+    InputPlumber*|*"Valve Steam Deck"*|*Gamepad*|*Motion*) return 0 ;;
+  esac
+  printf '%s\n' "$props" | grep -qE '^ID_VENDOR_ID=28de$|^ID_USB_VENDOR_ID=28de$' && return 0
+  printf '%s\n' "$props" | grep -qE 'DEVPATH=.*/uhid|/virtual/misc/uhid' && return 0
+  return 1
+}
+
+ext_hid_present() {
+  local ev props name bus kbd mouse
+  for ev in /sys/class/input/event*; do
+    [[ -e "$ev" ]] || continue
+    props="$(udevadm info -q property -p "$ev" 2>/dev/null)" || continue
+    name="$(printf '%s\n' "$props" | sed -n 's/^NAME=//p' | head -1)"
+    name="${name#\"}"
+    name="${name%\"}"
+    is_virtual_or_deck "$props" "$name" && continue
+    kbd="$(printf '%s\n' "$props" | sed -n 's/^ID_INPUT_KEYBOARD=//p')"
+    mouse="$(printf '%s\n' "$props" | sed -n 's/^ID_INPUT_MOUSE=//p')"
+    [[ "$kbd" == 1 || "$mouse" == 1 ]] || continue
+    bus="$(printf '%s\n' "$props" | sed -n 's/^ID_BUS=//p' | head -1)"
+    case "$bus" in
+      usb|bluetooth) return 0 ;;
+    esac
+    printf '%s\n' "$props" | grep -q '/bluetooth/' && return 0
+  done
+  return 1
+}
+
+composite_ids() {
+  local i found=0
+  for i in 0 1 2 3; do
+    if busctl --system get-property org.shadowblip.InputPlumber \
+         "/org/shadowblip/InputPlumber/CompositeDevice${i}" \
+         org.shadowblip.Input.CompositeDevice Name >/dev/null 2>&1 \
+      || inputplumber device "$i" targets list >/dev/null 2>&1; then
+      printf '%s\n' "$i"
+      found=1
+    fi
+  done
+  [[ "$found" -eq 1 ]] || printf '%s\n' 0
+}
+
+targets_have_keyboard() {
+  local id="$1" listed
+  listed="$(inputplumber device "$id" targets list 2>/dev/null)" || listed=""
+  printf '%s\n' "$listed" | grep -qiE '(^|[[:space:]])keyboard([[:space:]]|$)'
+}
+
+set_targets() {
+  local id="$1"
+  shift
+  if inputplumber device "$id" targets set "$@" >/dev/null 2>&1; then
+    return 0
+  fi
+  local n=$# path="/org/shadowblip/InputPlumber/CompositeDevice${id}"
+  busctl --system call org.shadowblip.InputPlumber "$path" \
+    org.shadowblip.Input.CompositeDevice SetTargetDevices as "$n" "$@" \
+    >/dev/null 2>&1
+}
+
+ready=0
+for _ in $(seq 1 25); do
+  if inputplumber devices list >/dev/null 2>&1 \
+    || busctl --system get-property org.shadowblip.InputPlumber \
+         /org/shadowblip/InputPlumber/CompositeDevice0 \
+         org.shadowblip.Input.CompositeDevice Name >/dev/null 2>&1; then
+    ready=1
+    break
+  fi
+  sleep 0.4
+done
+[[ "$ready" -eq 1 ]] || exit 0
+
+if ext_hid_present; then
+  want_kb=0
+else
+  want_kb=1
+fi
+
+while read -r id; do
+  [[ -n "$id" ]] || continue
+  have_kb=0
+  targets_have_keyboard "$id" && have_kb=1
+  if [[ "$want_kb" -eq 0 && "$have_kb" -eq 1 ]]; then
+    set_targets "$id" deck-uhid || true
+  elif [[ "$want_kb" -eq 1 && "$have_kb" -eq 0 ]]; then
+    set_targets "$id" deck-uhid keyboard || true
+  fi
+done < <(composite_ids)
+exit 0

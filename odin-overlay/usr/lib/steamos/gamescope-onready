@@ -1,0 +1,69 @@
+#!/bin/bash
+# Notify systemd after DISPLAY / GAMESCOPE_WAYLAND_DISPLAY are published.
+# steam.service After=gamescope-session: if we notify first, Steam starts
+# without DISPLAY and exits 1 (health-check then wipes the client).
+#
+# Env matches the working SM8550 session: compositor Wayland via
+# GAMESCOPE_WAYLAND_DISPLAY; Steam Qt/CEF on Xwayland (DISPLAY + xcb).
+# Leave XDG_SESSION_TYPE unset — setting wayland or x11 breaks Steam DM.
+
+set +e
+
+source /usr/lib/steamos/gamescope-env-list
+
+if [[ -n "${WAYLAND_DISPLAY:-}" ]]; then
+  export GAMESCOPE_WAYLAND_DISPLAY="${GAMESCOPE_WAYLAND_DISPLAY:-$WAYLAND_DISPLAY}"
+fi
+if [[ -z "${GAMESCOPE_WAYLAND_DISPLAY:-}" && -n "${XDG_RUNTIME_DIR:-}" ]]; then
+  if [[ -S "${XDG_RUNTIME_DIR}/gamescope-0" ]]; then
+    export GAMESCOPE_WAYLAND_DISPLAY=gamescope-0
+  fi
+fi
+export DISPLAY="${DISPLAY:-:0}"
+export XDG_CURRENT_DESKTOP="${XDG_CURRENT_DESKTOP:-gamescope}"
+export XDG_SESSION_DESKTOP="${XDG_SESSION_DESKTOP:-gamescope}"
+export QT_QPA_PLATFORM=xcb
+export _STEAM_SETENV_MANAGER=1
+unset WAYLAND_DISPLAY || true
+unset XDG_SESSION_TYPE || true
+
+inherit=()
+for v in DISPLAY GAMESCOPE_WAYLAND_DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP \
+         XDG_RUNTIME_DIR QT_QPA_PLATFORM _STEAM_SETENV_MANAGER SteamDeck; do
+  if [[ -n "${!v:-}" ]]; then
+    inherit+=("$v")
+  fi
+done
+if ((${#inherit[@]})); then
+  dbus-update-activation-environment "${inherit[@]}" >/dev/null 2>&1 || true
+  systemctl --user import-environment "${inherit[@]}" >/dev/null 2>&1 || true
+fi
+systemctl --user set-environment \
+  "DISPLAY=${DISPLAY}" \
+  "GAMESCOPE_WAYLAND_DISPLAY=${GAMESCOPE_WAYLAND_DISPLAY:-gamescope-0}" \
+  "QT_QPA_PLATFORM=xcb" \
+  "XDG_CURRENT_DESKTOP=gamescope" \
+  "_STEAM_SETENV_MANAGER=1" >/dev/null 2>&1 || true
+systemctl --user unset-environment WAYLAND_DISPLAY XDG_SESSION_TYPE >/dev/null 2>&1 || true
+
+xhost + >/dev/null 2>&1 || true
+echo 'Xft.dpi: 144' | xrdb -merge >/dev/null 2>&1 || true
+
+# Game Mode does not always reach user default.target. Start the sink
+# before Steam so splash/UI audio has a speaker route.
+systemctl --user start pipewire.service pipewire-pulse.service wireplumber.service >/dev/null 2>&1 || true
+systemctl --user start sm8550-audio-pipewire.service sm8550-volume-keys.service >/dev/null 2>&1 || true
+
+if [[ -n "${GAMESCOPE_READY_NOTIFY_SOCKET:-}" ]]; then
+  export NOTIFY_SOCKET="$GAMESCOPE_READY_NOTIFY_SOCKET"
+  systemd-notify --ready >/dev/null 2>&1 || true
+fi
+
+systemctl --user start steam.service >/dev/null 2>&1 || true
+
+WATCH_SERVICE="${1:-}"
+if [[ -n "${WATCH_SERVICE}" && "${WATCH_SERVICE}" != "steam.service" ]]; then
+  systemctl --user start "${WATCH_SERVICE}" >/dev/null 2>&1 || true
+fi
+
+exec sleep infinity

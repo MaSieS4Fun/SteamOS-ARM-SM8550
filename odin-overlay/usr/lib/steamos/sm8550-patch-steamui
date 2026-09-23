@@ -1,0 +1,95 @@
+#!/bin/bash
+# Frame / steamdeck_stable ARM Gamepad UI hangs the library spinner until
+# AppStore sees update_complete(). This client only sends partial overviews
+# (CURLStore 136/9, no asset URLs), so that flag never arrives.
+# Minified names change between builds — patch by regex, not a fixed string.
+set +e
+root="${1:-/home/steamos/.local/share/Steam/steamui}"
+python3 - "$root" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+if not root.is_dir():
+    sys.exit(0)
+
+# Original (names vary):
+#   await new Promise((e,t)=>{let r=e;SteamClient.Apps.RegisterForAppOverviewChanges(e=>{this.UpdateAppOverview(e)&&(this.m_bIsInitialized=!0,r&&r(),r=null)})})
+# Resolve on first overview OR after 1.5s. Overlay/QAM already work; this
+# is what leaves the Steam wheel spinning on a logged-in session.
+# Closing sequence after `r=null` is `)})}`  →  ) } ) } )
+_END = r"\)" r"\}" r"\)" r"\}" r"\)"
+APP_WAIT = re.compile(
+    r"await new Promise\(\((\w+),(\w+)\)=>\{let (\w+)=\1;"
+    r"SteamClient\.Apps\.RegisterForAppOverviewChanges\((\w+)=>\{"
+    r"this\.UpdateAppOverview\(\4\)&&\(this\.m_bIsInitialized=!0,"
+    r"\3&&\3\(\),\3=null" + _END
+)
+APP_WAIT_NEW = (
+    r"await new Promise((\1,\2)=>{let \3=\1;"
+    r"const done=()=>{this.m_bIsInitialized=!0;\3&&\3();\3=null};"
+    r"setTimeout(done,1500);"
+    r"SteamClient.Apps.RegisterForAppOverviewChanges(\4=>{"
+    r"this.UpdateAppOverview(\4);done()})})"
+)
+
+# BootStrapperInhibitAll makes Settings/OOBE report eresult Blocked (40).
+# Soft-fail is ignored; Blocked + !available must be treated as OK.
+OLD_CHECK = (
+    "GetMostSpecificCheckResult(){const e=this.m_updateState.update_check_results??"
+    "[{eresult:s.R}];let t=!1;for(const r of e)if(r.eresult!=s.R){if(r.eresult!=s.zi)"
+    "return r.eresult;t=!0}return t?s.zi:s.R}"
+)
+NEW_CHECK = (
+    "GetMostSpecificCheckResult(){const e=this.m_updateState.update_check_results??"
+    "[{eresult:s.R}];let t=!1;for(const r of e){if(40===r.eresult&&!r.available)continue;"
+    "if(r.eresult!=s.R){if(r.eresult!=s.zi)return r.eresult;t=!0}}return t?s.zi:s.R}"
+)
+
+# Exact leftovers from older steamui builds.
+EXACT = [
+    (
+        "SetAutoPairDeviceTypes(w){this.m_rgAutoPairDeviceTypes=w,this.m_rgAutoPairDeviceTypes.length",
+        "SetAutoPairDeviceTypes(w){this.m_rgAutoPairDeviceTypes=w||[],this.m_rgAutoPairDeviceTypes.length",
+    ),
+    (
+        'ResolveURL(C,...f){const D=this.m_steamUrls[C];if(!D)return;let L=D.url;',
+        'ResolveURL(C,...f){const D=this.m_steamUrls[C];if(!D)return"https://store.steampowered.com/";let L=D.url;',
+    ),
+    (
+        "this.m_vecLoginUsers=await SteamClient.User.GetLoginUsers()",
+        "this.m_vecLoginUsers=(await SteamClient.User.GetLoginUsers())||[]",
+    ),
+    (
+        "this.m_hOverlayChatBrowserInfoChanged=SteamClient.WebChat.RegisterOverlayChatBrowserInfoChanged(this.OnOverlayChatBrowserInfoChanged),this.m_CMInterface.RunWhenLoggedOn(()=>{this.OnOverlayChatBrowserInfoChanged()})",
+        "this.m_hOverlayChatBrowserInfoChanged=SteamClient.WebChat&&SteamClient.WebChat.RegisterOverlayChatBrowserInfoChanged&&SteamClient.WebChat.RegisterOverlayChatBrowserInfoChanged(this.OnOverlayChatBrowserInfoChanged),this.m_CMInterface&&this.m_CMInterface.RunWhenLoggedOn(()=>{SteamClient.WebChat&&this.OnOverlayChatBrowserInfoChanged()})",
+    ),
+]
+
+changed = 0
+for p in list(root.glob("chunk*.js")) + list(root.glob("library.js")):
+    txt = p.read_text(errors="replace")
+    orig = txt
+    if "setTimeout(done,1500)" not in txt or "RegisterForAppOverviewChanges" not in txt:
+        txt, n = APP_WAIT.subn(APP_WAIT_NEW, txt, count=1)
+        if n:
+            print(f"patched AppStore wait in {p.name}", file=sys.stderr)
+    if "40===r.eresult&&!r.available" not in txt and OLD_CHECK in txt:
+        txt = txt.replace(OLD_CHECK, NEW_CHECK, 1)
+        print(f"patched updater Blocked(40) in {p.name}", file=sys.stderr)
+    for old, new in EXACT:
+        if old in txt:
+            txt = txt.replace(old, new)
+    complete = "return l&&s.oy.ScopeRunningApps(),w.md.OnAppOverviewChange(a,n),t.update_complete()}"
+    complete_new = "return l&&s.oy.ScopeRunningApps(),w.md.OnAppOverviewChange(a,n),(this.m_bIsInitialized=!0,!0)}"
+    if complete in txt:
+        txt = txt.replace(complete, complete_new)
+        print(f"forced update_complete in {p.name}", file=sys.stderr)
+    if txt != orig:
+        p.write_text(txt)
+        changed += 1
+        print(f"wrote {p.name}", file=sys.stderr)
+print(f"steamui files patched: {changed}", file=sys.stderr)
+PY
+exit 0

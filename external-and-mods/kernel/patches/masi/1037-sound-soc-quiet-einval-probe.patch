@@ -1,0 +1,17 @@
+--- a/sound/soc/soc-utils.c
++++ b/sound/soc/soc-utils.c
+@@ -29,6 +29,14 @@ int snd_soc_ret(const struct device *dev, int ret, const char *fmt, ...)
+ 	case -ENOTSUPP:
+ 	case -EOPNOTSUPP:
+ 		break;
++	case -EINVAL:
++		va_start(args, fmt);
++		vaf.fmt = fmt;
++		vaf.va = &args;
++
++		dev_dbg(dev, "ASoC error (%d): %pV", ret, &vaf);
++		va_end(args);
++		break;
+ 	default:
+ 		va_start(args, fmt);
+ 		vaf.fmt = fmt;

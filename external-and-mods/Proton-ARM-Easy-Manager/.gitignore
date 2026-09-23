@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.cache/
+*.partial
+dist/
+build/
+.DS_Store
+*.bak-paem

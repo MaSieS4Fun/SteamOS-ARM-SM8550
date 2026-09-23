@@ -1,0 +1,13 @@
+[Unit]
+Description=SM8550 boot debug dump (early)
+DefaultDependencies=no
+After=local-fs.target systemd-journald.service
+Wants=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/steamos/sm8550-boot-debug early
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,62 @@
+SteamOS ARM adaptado para AYN Odin 2 / SM8550
+=============================================
+English: README-ODIN.txt
+
+
+Usuario preconfigurado:  steamos  (uid 1000, sin contraseña)
+Sesión por defecto:      gamescope (modo juego)
+
+Qué se cambió
+-------------
+- Kernel 7.0.14-edge-sm8550 (módulos + firmware + KERNEL para ABL)
+- gamescope MSM con brillo por sysfs
+- MangoHud del árbol external-and-mods
+- lsfg-vk + plugin Decky preconfigurado en este home
+- libvulkan_freedreno.so Mesa 26.2.3 parcheada
+- Box64 (SD8G2) instalado de forma silenciosa para Decky/x86_64
+- Steam ROM Manager, instalador UFS, instalador Decky
+- Mando: rsinput ±740 + InputPlumber deck-uhid + teclado (háptico OSK)
+
+Mando
+-----
+El kernel expone "AYN Odin2 Gamepad" (phys rsinput-gamepad/input0).
+InputPlumber lo convierte en "Valve Steam Deck Controller" (deck-uhid).
+Steam usa el stack oficial (QAM, Steam Input). No es un Xbox 360.
+
+Targets: deck-uhid + keyboard (háptico del teclado en pantalla).
+Si se conecta teclado o ratón USB/Bluetooth, el teclado virtual
+se apaga; al desconectar vuelve. El mando Valve (uhid) no cuenta.
+
+sm8550-fixpad aplica EVIOCSABS ±740 antes de arrancar InputPlumber.
+
+Particiones (steamos-sm8550.img)
+--------------------------------
+p1 vfat BOOT  — KERNEL para ABL (no es la ESP del Steam Deck)
+p2 ext4 root  — sistema
+p3 ext4 home  — /home/steamos, se agranda al primer arranque
+
+Es el esquema de SteamOS PC/handheld (root + home), no el A/B del Deck.
+ABL no usa EFI, por eso p1 es FAT con KERNEL.
+
+Imagen
+------
+El script make-steamos-sm8550.sh descarga SteamOS si hace falta, aplica
+los reemplazos, incrusta el UUID de root en KERNEL y genera el .img.
+
+  sudo ./make-steamos-sm8550.sh
+  sudo dd if=steamos-sm8550.img of=/dev/sdX bs=4M status=progress conv=fsync
+
+En ABL (Vol- al encender): Set the Device → Odin 2 → Linux → START.
+
+Decky
+-----
+El plugin decky-lsfg-vk ya está en ~/homebrew/plugins.
+Box64 ya está en el sistema (binfmt); el loader se instala desde el
+escritorio "Decky Loader" si lo quieres.
+
+lsfg-vk
+-------
+Capa Vulkan en /usr/local/lib/liblsfg-vk.so
+Config: ~/.config/lsfg-vk/conf.toml
+DLL de Lossless Scaling (cuando la instales en Steam):
+  ~/.local/share/Steam/steamapps/common/Lossless Scaling/Lossless.dll

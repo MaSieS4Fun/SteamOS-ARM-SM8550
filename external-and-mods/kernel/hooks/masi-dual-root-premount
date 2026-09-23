@@ -1,0 +1,68 @@
+#!/bin/sh
+# Pick microSD root (root=UUID=) vs internal UFS (masi.ufsroot=PARTLABEL=STORAGE).
+# Must run from init-premount (before wait_for root device).
+
+PREREQ=""
+prereqs() {
+	echo "$PREREQ"
+}
+
+case "$1" in
+prereqs)
+	prereqs
+	exit 0
+	;;
+esac
+
+. /scripts/functions
+
+ufs_root=""
+sd_root="${ROOT}"
+ufs_storage=""
+ufs_pk=""
+
+ufs_root=$(sed -n 's/.*masi\.ufsroot=PARTLABEL=\([^ ]*\).*/\1/p' /proc/cmdline 2>/dev/null)
+[ -n "$ufs_root" ] || ufs_root="STORAGE"
+
+# Internal UFS: ROCKNIX + STORAGE on the same scsi/nvme disk.
+if [ -b "/dev/disk/by-partlabel/ROCKNIX" ] && [ -b "/dev/disk/by-partlabel/${ufs_root}" ]; then
+	rk=$(readlink -f /dev/disk/by-partlabel/ROCKNIX 2>/dev/null || true)
+	st=$(readlink -f /dev/disk/by-partlabel/${ufs_root} 2>/dev/null || true)
+	if [ -n "$rk" ] && [ -n "$st" ]; then
+		rk_pk=$(lsblk -no PKNAME "$rk" 2>/dev/null || true)
+		st_pk=$(lsblk -no PKNAME "$st" 2>/dev/null || true)
+		if [ -n "$rk_pk" ] && [ "$rk_pk" = "$st_pk" ]; then
+			case "$rk_pk" in
+			sd*|nvme*)
+				ufs_pk="$rk_pk"
+				ufs_storage="$st"
+				;;
+			esac
+		fi
+	fi
+fi
+
+use_ufs=0
+if [ -n "$ufs_storage" ]; then
+	if [ "$(sed -n 's/.*masi\.root=\([^ ]*\).*/\1/p' /proc/cmdline 2>/dev/null)" = ufs ]; then
+		use_ufs=1
+	elif [ -n "$sd_root" ] && ! resolve_device "$sd_root" >/dev/null 2>&1; then
+		use_ufs=1
+	fi
+fi
+
+if [ "$use_ufs" -eq 1 ] && [ -n "$ufs_storage" ]; then
+	ROOT="PARTLABEL=${ufs_root}"
+	export ROOT
+	[ -z "${ROOTFSTYPE}" ] || [ "${ROOTFSTYPE}" = auto ] && ROOTFSTYPE=ext4
+	export ROOTFSTYPE
+	log_begin_msg "masi: internal UFS root (${ROOT} on /dev/${ufs_pk})"
+	log_end_msg
+elif [ -n "$sd_root" ]; then
+	ROOT="$sd_root"
+	export ROOT
+	log_begin_msg "masi: microSD root (${ROOT})"
+	log_end_msg
+fi
+
+exit 0

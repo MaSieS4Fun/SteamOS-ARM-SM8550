@@ -1,0 +1,6 @@
+#!/bin/bash
+# Current profile: decky-lsfg-vk
+export ENABLE_GAMESCOPE_WSI=0
+export DXVK_HDR=0
+export LSFG_PROCESS=decky-lsfg-vk
+exec "$@"

@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Thorch KWin touch mapping
+Exec=/usr/bin/thorch-kwin-touch-map --watch
+OnlyShowIn=KDE;
+NoDisplay=true
+X-KDE-autostart-phase=1

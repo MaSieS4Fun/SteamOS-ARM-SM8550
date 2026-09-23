@@ -1,0 +1,123 @@
+#!/usr/bin/env python3
+"""Odin2 volume rocker: gpio-keys = VOLUP, pmic_resin = VOLDOWN → wpctl.
+
+Do not grab USB/Bluetooth keyboards, mice, or the gamepad.
+"""
+from __future__ import annotations
+
+import array
+import fcntl
+import glob
+import os
+import select
+import struct
+import subprocess
+import sys
+
+EVENT_FMT = "llHHi"
+EVENT_SIZE = struct.calcsize(EVENT_FMT)
+EV_KEY = 0x01
+KEY_MUTE = 113
+KEY_VOLUMEDOWN = 114
+KEY_VOLUMEUP = 115
+STEP = os.environ.get("SM8550_VOLUME_STEP", "5%")
+LIMIT = os.environ.get("SM8550_VOLUME_LIMIT", "1.0")
+ALLOW = ("gpio-keys", "pmic_resin")
+
+
+def log(msg: str) -> None:
+    print(f"sm8550-volume-keys: {msg}", flush=True)
+
+
+def wpctl(*args: str) -> None:
+    env = os.environ.copy()
+    env.setdefault("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+    try:
+        subprocess.run(
+            ["wpctl", *args],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=2,
+            env=env,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+
+
+def device_name(path: str) -> str:
+    name = os.path.basename(path)
+    sysname = f"/sys/class/input/{name}/device/name"
+    try:
+        return open(sysname, encoding="utf-8", errors="ignore").read().strip()
+    except OSError:
+        return ""
+
+
+def has_volume_keys(fd: int) -> bool:
+    buf = array.array("B", [0] * 96)
+    nr = 0x20 + EV_KEY
+    ioc = (2 << 30) | (ord("E") << 8) | nr | (len(buf) << 16)
+    try:
+        fcntl.ioctl(fd, ioc, buf, True)
+    except OSError:
+        return False
+
+    def bit(code: int) -> bool:
+        return bool(buf[code // 8] & (1 << (code % 8)))
+
+    return bit(KEY_VOLUMEUP) or bit(KEY_VOLUMEDOWN) or bit(KEY_MUTE)
+
+
+def open_devices() -> list[tuple[str, int]]:
+    opened: list[tuple[str, int]] = []
+    for path in sorted(glob.glob("/dev/input/event*")):
+        dname = device_name(path).lower()
+        if not any(a in dname for a in ALLOW):
+            continue
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+        except OSError:
+            continue
+        if not has_volume_keys(fd):
+            os.close(fd)
+            continue
+        log(f"watch {path} ({dname})")
+        opened.append((path, fd))
+    return opened
+
+
+def apply(code: int) -> None:
+    if code == KEY_VOLUMEUP:
+        wpctl("set-volume", "-l", LIMIT, "@DEFAULT_AUDIO_SINK@", f"{STEP}+")
+    elif code == KEY_VOLUMEDOWN:
+        wpctl("set-volume", "-l", LIMIT, "@DEFAULT_AUDIO_SINK@", f"{STEP}-")
+    elif code == KEY_MUTE:
+        wpctl("set-mute", "@DEFAULT_AUDIO_SINK@", "toggle")
+
+
+def main() -> int:
+    devs = open_devices()
+    if not devs:
+        log("no gpio-keys/pmic_resin volume devices")
+        return 0
+    fds = {fd: path for path, fd in devs}
+    while True:
+        try:
+            ready, _, _ = select.select(list(fds), [], [], 2.0)
+        except InterruptedError:
+            continue
+        for fd in ready:
+            try:
+                data = os.read(fd, EVENT_SIZE * 8)
+            except OSError:
+                continue
+            for off in range(0, len(data) - EVENT_SIZE + 1, EVENT_SIZE):
+                _s, _us, etype, code, value = struct.unpack_from(EVENT_FMT, data, off)
+                if etype == EV_KEY and value == 1:
+                    apply(code)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

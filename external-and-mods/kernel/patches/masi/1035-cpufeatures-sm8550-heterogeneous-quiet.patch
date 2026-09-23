@@ -1,0 +1,33 @@
+From: MaSi-OS <masies@local>
+Subject: [PATCH] arm64: cpufeature: quiet SM8550 big.LITTLE sanity checks
+
+Treat AA64MMFR1/MMFR4 mismatches as non-fatal on qcom,sm8550.
+Signed-off-by: MaSi-OS <masies@local>
+
+diff --git a/arch/arm64/kernel/cpufeature.c b/arch/arm64/kernel/cpufeature.c
+--- a/arch/arm64/kernel/cpufeature.c
++++ b/arch/arm64/kernel/cpufeature.c
+@@ -73,6 +73,7 @@
+ #include <linux/minmax.h>
+ #include <linux/mm.h>
+ #include <linux/cpu.h>
++#include <linux/of.h>
+ #include <linux/kasan.h>
+ #include <linux/percpu.h>
+ #include <linux/sched/isolation.h>
+@@ -1259,6 +1260,16 @@ static int check_update_ftr_reg(u32 sys_id, int cpu, u64 val, u64 boot)
+ 	update_cpu_ftr_reg(regp, val);
+ 	if ((boot & regp->strict_mask) == (val & regp->strict_mask))
+ 		return 0;
++
++	if (of_machine_is_compatible("qcom,sm8550") &&
++	    (sys_id == SYS_ID_AA64MMFR1_EL1 ||
++	     sys_id == SYS_ID_MMFR4_EL1)) {
++		pr_debug("heterogeneous %s on CPU%d (boot %#016llx, cpu %#016llx)\n",
++			 regp->name, cpu, boot, val);
++		return 0;
++	}
++
+ 	pr_warn("SANITY CHECK: Unexpected variation in %s. Boot CPU: %#016llx, CPU%d: %#016llx\n",
+ 		regp->name, boot, cpu, val);
+ 	return 1;

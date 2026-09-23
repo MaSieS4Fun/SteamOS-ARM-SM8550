@@ -1,0 +1,3 @@
+#!/bin/sh
+# No RAUC/atomupd payload. Steam OOBE treats check→0 as "update available".
+exec /usr/bin/steamos-update "$@"

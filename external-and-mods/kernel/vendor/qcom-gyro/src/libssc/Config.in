@@ -1,0 +1,16 @@
+config BR2_PACKAGE_LIBSSC
+	bool "libssc"
+	depends on BR2_aarch64
+	depends on BR2_USE_WCHAR
+	depends on BR2_TOOLCHAIN_HAS_THREADS
+	depends on BR2_USE_MMU
+	depends on BR2_INSTALL_LIBSTDCPP
+	select BR2_PACKAGE_LIBGLIB2
+	select BR2_PACKAGE_LIBQRTR_GLIB
+	select BR2_PACKAGE_LIBQMI
+	select BR2_PACKAGE_PROTOBUF_C
+	help
+	  GLib library exposing accelerometer, gyroscope and other sensors
+	  managed by the Qualcomm Sensor Core over QMI/QRTR.
+
+	  https://codeberg.org/DylanVanAssche/libssc

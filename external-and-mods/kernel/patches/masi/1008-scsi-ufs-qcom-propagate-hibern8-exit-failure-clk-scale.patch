@@ -1,0 +1,26 @@
+From: jaewun <jaewun@users.noreply.github.com>
+Subject: [PATCH] scsi: ufs: qcom: propagate hibern8 exit failure from clk_scale_notify
+
+ufs_qcom_clk_scale_notify() wakes the link with ufshcd_uic_hibern8_exit()
+after a POST_CHANGE clock scale but drops its return value and always returns 0.
+
+Capture and return the error so the failure is propagated to the
+clock-scaling/devfreq accounting and rollback path instead of being masked as
+success.
+
+Signed-off-by: jaewun <jaewun@users.noreply.github.com>
+---
+diff --git a/drivers/ufs/host/ufs-qcom.c b/drivers/ufs/host/ufs-qcom.c
+--- a/drivers/ufs/host/ufs-qcom.c
++++ b/drivers/ufs/host/ufs-qcom.c
+@@ -1779,8 +1779,8 @@
+ 		}
+ 
+ 		ufs_qcom_icc_update_bw(host);
+-		ufshcd_uic_hibern8_exit(hba);
++		err = ufshcd_uic_hibern8_exit(hba);
+ 	}
+ 
+-	return 0;
++	return err;
+ }

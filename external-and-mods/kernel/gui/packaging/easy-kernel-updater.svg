@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <!-- Maintenance / tools icon: gear + wrench -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#2a3340"/>
+      <stop offset="100%" stop-color="#1a222c"/>
+    </linearGradient>
+    <linearGradient id="metal" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#c9d2dc"/>
+      <stop offset="100%" stop-color="#8a97a6"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#f0b429"/>
+      <stop offset="100%" stop-color="#d4891a"/>
+    </linearGradient>
+  </defs>
+  <rect width="128" height="128" rx="28" fill="url(#bg)"/>
+  <!-- Gear -->
+  <g transform="translate(64 58)">
+    <path fill="url(#metal)" d="
+      M0-34 l7-2 3 8 9-1 5 7-7 5 2 9-8 3-1 9-9-2-5 7-7-5-9 2-3-8-9 1-5-7 7-5-2-9 8-3 1-9 9 2 5-7z"/>
+    <circle r="14" fill="#1a222c"/>
+    <circle r="7" fill="url(#accent)"/>
+  </g>
+  <!-- Wrench -->
+  <g transform="translate(86 86) rotate(40)">
+    <path fill="url(#accent)" stroke="#b8730f" stroke-width="1.5"
+          d="M-6-28 c0-8 8-12 14-8 l4 3 -10 10 6 6 10-10 3 4 c4 6 0 14-8 14
+             l-4-2 -18 18 c-2 2-5 2-7 0 l-4-4 c-2-2-2-5 0-7 l18-18 -2-4z"/>
+  </g>
+</svg>

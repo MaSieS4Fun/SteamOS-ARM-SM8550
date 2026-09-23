@@ -1,0 +1,6 @@
+#!/bin/bash
+# efi-clean: drop host firmware/modules copied by stock mkinitramfs hooks.
+[[ "$1" == "prereqs" ]] && exit 0
+
+rm -rf "${DESTDIR}/lib/firmware" "${DESTDIR}/usr/lib/firmware"
+find "${DESTDIR}/lib/modules" -type f -name '*.ko*' -delete 2>/dev/null || true

@@ -1,0 +1,20 @@
+# Build cache and output
+.cache/
+output/
+
+# Local overrides (optional)
+config/local.conf
+
+# Editor / OS
+*.swp
+*~
+.DS_Store
+.idea/
+.vscode/
+
+# Accidental kernel trees inside project
+linux-*/
+
+# Reference initrd blobs (see reference/README.md + scripts/setup-reference-initrd.sh)
+reference/*.img
+reference/initrd.img-*

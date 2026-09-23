@@ -1,0 +1,149 @@
+#!/bin/bash
+# Same policy as SteamOS-Ubuntu vendor/audio + sm8550-prefer-speaker-sink:
+#   HDMI/DP connected  → HiFi (DisplayPort, Speaker)
+#   HDMI/DP unplugged  → pro-audio + speaker I2S mixers (this is local speakers)
+# Do not hammer volume (that pops the Game Mode OSD). Watch DP flips only.
+set +e
+export PATH="/usr/sbin:/usr/bin:/sbin:/bin${PATH:+:$PATH}"
+
+MODE=once
+case "${1:-}" in
+    --watch|-w) MODE=watch ;;
+esac
+
+log() { echo "sm8550-audio-pipewire: $*" >&2; }
+pactl_ok() { timeout 8 pactl "$@" 2>/dev/null; }
+
+wait_card() {
+  local i
+  for i in $(seq 1 80); do
+    pactl_ok list short cards | grep -qiE 'platform-sound|alsa_card' && return 0
+    sleep 0.25
+  done
+  return 1
+}
+
+card_name() {
+  pactl_ok list short cards | awk 'BEGIN{IGNORECASE=1}
+    /platform-sound/ {print $2; exit}
+    /alsa_card/ {print $2; exit}'
+}
+
+drm_dp() {
+  local f
+  for f in /sys/class/drm/card*-DP-*/status /sys/class/drm/card*-HDMI-A-*/status; do
+    [[ -r "$f" ]] || continue
+    [[ "$(tr -d '[:space:]' <"$f")" == connected ]] && return 0
+  done
+  return 1
+}
+
+restore_speaker_mixers() {
+  /usr/lib/steamos/sm8550-audio-setup >/dev/null 2>&1
+  amixer -c 0 cset name='DISPLAY_PORT_RX_0 Audio Mixer MultiMedia2' 0 >/dev/null 2>&1
+  amixer -c 0 cset name='PRIMARY_MI2S_RX Audio Mixer MultiMedia1' 1 >/dev/null 2>&1
+  amixer -c 0 cset name='RX_CODEC_DMA_RX_0 Audio Mixer MultiMedia2' 1 >/dev/null 2>&1
+}
+
+enable_dp_mixers() {
+  amixer -c 0 cset name='PRIMARY_MI2S_RX Audio Mixer MultiMedia1' 0 >/dev/null 2>&1
+  amixer -c 0 cset name='RX_CODEC_DMA_RX_0 Audio Mixer MultiMedia2' 0 >/dev/null 2>&1
+  amixer -c 0 cset name='DISPLAY_PORT_RX_0 Audio Mixer MultiMedia2' 1 >/dev/null 2>&1
+}
+
+set_default() {
+  local sink="$1" idx
+  [[ -n "${sink:-}" ]] || return 1
+  log "default sink ${sink}"
+  pactl_ok set-default-sink "$sink"
+  pactl_ok set-sink-mute "$sink" 0
+  while read -r idx; do
+    [[ -n "${idx:-}" ]] || continue
+    pactl_ok move-sink-input "$idx" "$sink"
+  done < <(pactl_ok list short sink-inputs | awk '{print $1}')
+}
+
+find_sink() {
+  local pat="$1"
+  pactl_ok list short sinks | awk -v pat="$pat" 'BEGIN{IGNORECASE=1}
+    $2 ~ /loopback/ {next}
+    $2 ~ pat {print $2; exit}'
+}
+
+wait_sink() {
+  local pat="$1" i
+  for i in $(seq 1 16); do
+    find_sink "$pat" && return 0
+    sleep 0.25
+  done
+  return 1
+}
+
+set_profile() {
+  local card="$1" profile="$2"
+  pactl_ok set-card-profile "$card" "$profile"
+}
+
+persist() {
+  local sink="$1" profile="$2"
+  local state="${XDG_STATE_HOME:-$HOME/.local/state}/wireplumber"
+  mkdir -p "$state"
+  printf '[default-nodes]\ndefault.configured.audio.sink=%s\n' "$sink" >"$state/default-nodes"
+  printf '[default-profile]\nalsa_card.platform-sound=%s\n' "$profile" >"$state/default-profile"
+}
+
+apply_policy() {
+  local card sink
+  card="$(card_name)"
+  [[ -n "$card" ]] || { log "no card"; return 1; }
+  log "card=${card}"
+
+  if drm_dp; then
+    log "DRM DP/HDMI connected → HiFi DisplayPort"
+    set_profile "$card" 'HiFi (DisplayPort, Speaker)' \
+      || set_profile "$card" 'HiFi (Speaker, DisplayPort)' \
+      || set_profile "$card" HiFi
+    enable_dp_mixers
+    wait_sink 'DisplayPort|HDMI' >/dev/null
+    sink="$(find_sink 'DisplayPort|HDMI')"
+    persist "${sink:-alsa_output.platform-sound.HiFi__DisplayPort__sink}" 'HiFi (DisplayPort, Speaker)'
+    set_default "$sink"
+  else
+    log "no HDMI → pro-audio speakers (vendor/audio path)"
+    set_profile "$card" pro-audio
+    restore_speaker_mixers
+    wait_sink 'pro-output-0' >/dev/null
+    restore_speaker_mixers
+    sink="$(find_sink 'pro-output-0')"
+    [[ -n "$sink" ]] || sink="$(find_sink 'pro-output')"
+    persist "${sink:-alsa_output.platform-sound.pro-output-0}" pro-audio
+    set_default "$sink" || log "no speaker sink"
+  fi
+
+  log "sinks=$(pactl_ok list short sinks | tr '\n' ';')"
+  log "default=$(pactl_ok get-default-sink)"
+}
+
+if ! wait_card; then
+  log "pipewire card never appeared"
+  exit 0
+fi
+
+apply_policy
+if [[ "$MODE" != "watch" ]]; then
+  exit 0
+fi
+
+last=off
+drm_dp && last=on
+log "watch last_dp=${last}"
+while true; do
+  sleep 2
+  cur=off
+  drm_dp && cur=on
+  if [[ "$cur" != "$last" ]]; then
+    log "DP flip ${last} -> ${cur}"
+    apply_policy
+    last="$cur"
+  fi
+done

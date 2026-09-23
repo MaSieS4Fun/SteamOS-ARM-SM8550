@@ -1,0 +1,40 @@
+From 2b8a305e49702c4d6fa03c2c1551c88679a65d69 Mon Sep 17 00:00:00 2001
+From: suckbluefrog <suckbluefrog@proton.me>
+Date: Fri, 10 Jul 2026 00:00:00 +000
+Subject: [PATCH] meson: make introspection optional
+
+InputPlumber consumes the C API directly. Allow embedded builds to omit GIR
+and Vala generation and their build-host runtime requirements.
+---
+ meson.options   | 5 +++++
+ src/meson.build | 2 +-
+ 2 files changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/meson.options b/meson.options
+index 4f008d1..dca7ec5 100644
+--- a/meson.options
++++ b/meson.options
+@@ -2,3 +2,8 @@ option('tests',
+   type: 'boolean',
+   value: true,
+   description: 'Build tests and the Python SSC mock server')
++
++option('introspection',
++  type: 'boolean',
++  value: true,
++  description: 'Build GObject introspection and Vala bindings')
+diff --git a/src/meson.build b/src/meson.build
+index b125846..fa797a0 100644
+--- a/src/meson.build
++++ b/src/meson.build
+@@ -92,7 +92,7 @@ pkg.generate(
+   requires: ['glib-2.0', 'gobject-2.0', 'gio-2.0', 'qmi-glib'],
+ )
+ 
+-if dependency('gobject-introspection-1.0', required: false).found()
++if get_option('introspection') and dependency('gobject-introspection-1.0', required: false).found()
+   gnome = import('gnome')
+ 
+   gir_files = gnome.generate_gir(libssc,
+-- 
+2.50.1

@@ -1,0 +1,3 @@
+#!/bin/sh
+# Jupiter/Deck firmware helper is not on SM8550. Steam calls `check` at UI start.
+exit 0

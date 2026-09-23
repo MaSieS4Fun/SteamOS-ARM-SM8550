@@ -1,0 +1,8 @@
+[Desktop Entry]
+Encoding=UTF-8
+Type=Application
+Name=Plasma (Wayland)
+Comment=KDE Plasma desktop on Wayland
+Exec=/usr/lib/steamos/sm8550-startplasma
+TryExec=/usr/bin/startplasma-wayland
+DesktopNames=KDE

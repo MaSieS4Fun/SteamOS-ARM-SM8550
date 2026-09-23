@@ -1,0 +1,42 @@
+#!/bin/sh
+
+if [ "$#" -lt 4 ]; then
+	echo "Usage: $0 LOG_FILE ROLE READY_FILE|- COMMAND [ARG ...]" >&2
+	exit 2
+fi
+
+log_file="$1"
+role="$2"
+ready_file="$3"
+shift 3
+child=""
+
+clear_ready_file() {
+	if [ "${ready_file}" != "-" ]; then
+		rm -f "${ready_file}"
+	fi
+}
+
+terminate() {
+	if [ -n "${child}" ]; then
+		kill "${child}" 2>/dev/null || true
+		wait "${child}" 2>/dev/null || true
+	fi
+	clear_ready_file
+	exit 0
+}
+
+trap terminate INT TERM HUP
+
+while :; do
+	clear_ready_file
+	"$@" >> "${log_file}" 2>&1 &
+	child=$!
+	wait "${child}"
+	status=$?
+	child=""
+	clear_ready_file
+	printf '[%s] %s exited with status %s; retrying\n' \
+		"$(date '+%F %T')" "${role}" "${status}" >> "${log_file}"
+	sleep 0.1
+done

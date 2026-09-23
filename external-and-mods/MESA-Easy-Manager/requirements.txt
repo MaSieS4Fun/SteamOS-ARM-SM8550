@@ -1,0 +1,4 @@
+# Runtime dependencies are system packages on Debian/Armbian:
+#   python3-gi gir1.2-gtk-3.0 policykit-1
+#
+# No PyPI packages are required for the default GTK UI.

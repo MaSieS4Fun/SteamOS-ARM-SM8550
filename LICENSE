@@ -1,0 +1,19 @@
+# Licenses
+
+SteamOS-ARM-SM8550 is a Linux distribution made up of many open-source
+components. Each component is provided under its own license.
+
+## Project software
+
+Original software and scripts developed for SteamOS-ARM-SM8550 are licensed
+under the terms of the [GNU GPL Version 2](https://www.gnu.org/licenses/old-licenses/gpl-2.0.html).
+
+Vendor trees keep their own licenses (Linux kernel GPL-2.0, Decky plugins
+GPL-3.0-or-later, gamescope BSD-2-Clause, and others). See [`CREDITS.md`](CREDITS.md).
+
+## Valve SteamOS and Steam
+
+Steam, SteamOS, Steam Deck, and related marks are trademarks of Valve
+Corporation. Official SteamOS userspace and the Steam client remain subject
+to Valve's terms. This repository does **not** redistribute the official
+SteamOS root filesystem or Steam client binaries.

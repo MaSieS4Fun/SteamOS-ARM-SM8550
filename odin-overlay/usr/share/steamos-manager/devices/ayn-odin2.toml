@@ -1,0 +1,20 @@
+[[device]]
+dt.compatible = "ayn,odin2"
+device = "ayn_odin2"
+variant = "Odin2"
+friendly_name = "AYN Odin 2"
+
+[[device]]
+dt.compatible = "ayn,odin2mini"
+device = "ayn_odin2"
+variant = "Mini"
+friendly_name = "AYN Odin 2 Mini"
+
+[[device]]
+dt.compatible = "ayn,odin2portal"
+device = "ayn_odin2"
+variant = "Portal"
+friendly_name = "AYN Odin 2 Portal"
+
+[inputplumber]
+target_devices = ["deck-uhid"]

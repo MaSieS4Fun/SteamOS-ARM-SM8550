@@ -1,0 +1,81 @@
+# Official SteamOS extract / packed images (Valve; do not publish)
+/rootfs/
+/rootfs.img
+/steamos-sm8550.img
+/*.img
+/.image-mnt/
+/chunks/
+/chunk-urls.txt
+/downloads/
+/bundle/
+/backups/
+/out/
+/odin-apply.log
+
+# Host tools downloaded next to the tree
+/tools/casync.deb
+/tools/casync-pkg/
+
+# Accidental CMake / libiio leftovers in the repo root
+/CMakeCache.txt
+/CMakeFiles/
+/cmake_uninstall.cmake
+/iio-config.h
+/iiod/
+/libiio.iss
+/libiio.pc
+/90-libiio.rules
+/artifact_manifest.txt
+/bindings/
+/man/
+/tests/
+/.version
+
+# Kernel build output
+/external-and-mods/kernel/output/
+/external-and-mods/kernel/.cache/
+/external-and-mods/kernel/.build/
+/external-and-mods/kernel/config/local.conf
+
+# gamescope / Box64 / lsfg-vk build trees and nested clones
+/external-and-mods/gamescope/build/
+/external-and-mods/gamescope/subprojects/
+# Full Box64 clone (nested git). The updater script fetches it at build time.
+/external-and-mods/BOX64/box64/
+/external-and-mods/lsfg-vk/build/
+/external-and-mods/lsfg-vk/thirdparty/
+/external-and-mods/MangoHud/build/
+
+# Python / JS build leftovers
+__pycache__/
+*.py[cod]
+*.map
+
+# InputPlumber / libiio download cache
+/external-and-mods/InputPlumber/extract/
+/external-and-mods/InputPlumber/libiio-src/
+/external-and-mods/InputPlumber/*.tar.gz
+
+# Valve Steam ARM client zips (fetch at image-build time)
+/external-and-mods/steam-client-arm64/
+
+# Decky / Node
+node_modules/
+.pnpm-store/
+
+# OS / editor / agent
+.DS_Store
+*.swp
+*~
+.idea/
+.vscode/
+.cursor/
+.agent/
+_agent_*
+
+# Secrets
+.env
+.env.*
+*.pem
+*.key
+*.gpg

@@ -1,0 +1,11 @@
+# Real USB/BT keyboard or mouse only. Never match deck-uhid (Valve 28de / uhid):
+# that restarted the composite in a loop and Steam never started.
+ACTION=="add|remove", SUBSYSTEM=="input", KERNEL=="event*", \
+  ENV{ID_BUS}=="usb|bluetooth", ENV{ID_INPUT_KEYBOARD}=="1", \
+  ENV{ID_VENDOR_ID}!="28de", DEVPATH!="*/uhid*", \
+  TAG+="systemd", ENV{SYSTEMD_WANTS}+="sm8550-inputplumber-ext-hid.service"
+
+ACTION=="add|remove", SUBSYSTEM=="input", KERNEL=="event*", \
+  ENV{ID_BUS}=="usb|bluetooth", ENV{ID_INPUT_MOUSE}=="1", \
+  ENV{ID_VENDOR_ID}!="28de", DEVPATH!="*/uhid*", \
+  TAG+="systemd", ENV{SYSTEMD_WANTS}+="sm8550-inputplumber-ext-hid.service"

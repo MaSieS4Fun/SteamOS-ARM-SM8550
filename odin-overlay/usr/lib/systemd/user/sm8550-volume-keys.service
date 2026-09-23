@@ -1,0 +1,13 @@
+[Unit]
+Description=SM8550 gpio volume rocker
+After=pipewire.service wireplumber.service
+Wants=pipewire.service wireplumber.service
+
+[Service]
+Type=simple
+ExecStart=/usr/lib/steamos/sm8550-volume-keys
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

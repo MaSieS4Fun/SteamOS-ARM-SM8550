@@ -1,0 +1,11 @@
+config BR2_PACKAGE_BATOCERA_QCOM_MOTION
+	bool "batocera-qcom-motion"
+	depends on BR2_PACKAGE_BATOCERA_TARGET_SM8550
+	select BR2_PACKAGE_LIBSSC
+	select BR2_PACKAGE_PYTHON3
+	select BR2_PACKAGE_PYTHON_PYXEL
+	select BR2_PACKAGE_ZLIB
+	help
+	  Expose Qualcomm Sensor Core accelerometer and gyroscope data as a
+	  local DSU/Cemuhook motion controller for emulators. Includes a
+	  controller-friendly gyro and five-pose accelerometer calibrator.

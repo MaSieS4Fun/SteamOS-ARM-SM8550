@@ -1,0 +1,43 @@
+From 0e8f1daecf28d5587b9503db82a82a11ff41af77 Mon Sep 17 00:00:00 2001
+From: suckbluefrog <suckbluefrog@proton.me>
+Date: Fri, 10 Jul 2026 00:00:00 +000
+Subject: [PATCH] meson: make tests and the Python mock server optional
+
+The mock server and test executables are not needed by the target runtime and
+pull a Python build into otherwise small embedded images.
+---
+ meson.build   | 6 ++++--
+ meson.options | 4 ++++
+ 2 files changed, 8 insertions(+), 2 deletions(-)
+ create mode 100644 meson.options
+
+diff --git a/meson.build b/meson.build
+index d954ed1..c6278a9 100644
+--- a/meson.build
++++ b/meson.build
+@@ -101,7 +101,11 @@ sources = files()
+ headers = files()
+ map_source = files('libssc.map')
+ 
+-subdir('mocking')
++if get_option('tests')
++  subdir('mocking')
++endif
+ subdir('data')
+ subdir('src')
+-subdir('tests')
++if get_option('tests')
++  subdir('tests')
++endif
+diff --git a/meson.options b/meson.options
+new file mode 100644
+index 0000000..4f008d1
+--- /dev/null
++++ b/meson.options
+@@ -0,0 +1,4 @@
++option('tests',
++  type: 'boolean',
++  value: true,
++  description: 'Build tests and the Python SSC mock server')
+-- 
+2.50.1

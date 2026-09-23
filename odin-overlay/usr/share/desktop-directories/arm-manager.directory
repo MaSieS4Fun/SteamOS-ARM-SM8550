@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=ARM-Manager
+Comment=ARM handheld tools (UFS, Mesa, Decky)
+Icon=preferences-system
+Type=Directory
+X-KDE-Weight=50

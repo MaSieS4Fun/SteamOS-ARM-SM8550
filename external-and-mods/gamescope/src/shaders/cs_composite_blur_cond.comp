@@ -1,0 +1,69 @@
+#version 450
+
+#extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_scalar_block_layout : require
+
+#include "descriptor_set.h"
+
+layout(
+  local_size_x = 8,
+  local_size_y = 8,
+  local_size_z = 1) in;
+
+#include "blit_push_data.h"
+
+#define BLUR_DONT_SCALE 1
+#include "composite.h"
+#include "blur.h"
+
+vec4 sampleLayer(uint layerIdx, vec2 uv) {
+    if ((c_ycbcrMask & (1 << layerIdx)) != 0)
+        return sampleLayer(s_ycbcr_samplers[layerIdx], layerIdx, uv, false);
+    return sampleLayer(s_samplers[layerIdx], layerIdx, uv, true);
+}
+
+void main() {
+    uvec2 coord = uvec2(gl_GlobalInvocationID.x, gl_GlobalInvocationID.y);
+    uvec2 outSize = imageSize(dst);
+    uvec2 outCoord = get_rotated_dst_coord(coord, outSize);
+
+    if (outCoord.x >= outSize.x || outCoord.y >= outSize.y)
+        return;
+
+    vec2 uv = vec2(coord);
+    vec3 outputValue = vec3(0.0f);
+
+    if (checkDebugFlag(compositedebug_PlaneBorders))
+        outputValue = vec3(1.0f, 0.0f, 0.0f);
+
+    float finalRevAlpha = 1.0f;
+
+    for (int i = c_blur_layer_count; i < c_layerCount; i++) {
+        vec4 layerColor = sampleLayer(i, uv);
+        float opacity = u_opacity[i];
+        float layerAlpha = opacity * layerColor.a;
+        float revAlpha = (1.0f - layerAlpha);
+        outputValue = BlendLayer( i, outputValue, layerColor, opacity );
+        finalRevAlpha *= revAlpha;
+    }
+
+    if (c_layerCount > 0) {
+        if (finalRevAlpha < 0.95) {
+            outputValue += gaussian_blur(s_samplers[VKR_BLUR_EXTRA_SLOT], 0, vec2(coord), u_blur_radius, true, true).rgb * finalRevAlpha;
+        } else {
+            outputValue = sampleLayer(0, uv).rgb * u_opacity[0];
+            for (int i = 1; i < c_blur_layer_count; i++) {
+                vec4 layerColor = sampleLayer(i, uv);
+                float opacity = u_opacity[i];
+                float layerAlpha = opacity * layerColor.a;
+                outputValue = BlendLayer( i, outputValue, layerColor, opacity );
+            }
+        }
+    }
+
+    outputValue = encodeOutputColor(outputValue);
+    imageStore(dst, ivec2(outCoord), vec4(outputValue, 0));
+
+    if (checkDebugFlag(compositedebug_Markers))
+        compositing_debug(outCoord);
+}

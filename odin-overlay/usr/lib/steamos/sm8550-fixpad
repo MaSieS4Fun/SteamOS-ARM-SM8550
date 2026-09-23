@@ -1,0 +1,147 @@
+#!/usr/bin/env python3
+"""Set SM8550 rsinput stick ABS range to ±740.
+
+The kernel pad (AYN Odin2 / Thor / RSInput Gamepad) reports ~±1407/1408.
+That is fine for Steam games that normalize, but many emulators treat the
+raw max as the travel and cannot be remapped. ±740 matches the working
+handheld userspace.
+
+This only changes absinfo on the native evdev node (EVIOCSABS). It does
+not grab the device, does not create a virtual keyboard, and does not
+use InputPlumber — external USB/Bluetooth keyboards stay independent.
+"""
+from __future__ import annotations
+
+import fcntl
+import os
+import struct
+import sys
+
+TARGET = int(os.environ.get("FIXPAD_TARGET", "740"))
+NAMES = {
+    "AYN Odin2 Gamepad",
+    "AYN Thor Gamepad",
+    "RSInput Gamepad",
+}
+SKIP = ("Motion", "Touch", "Headset", "Keyboard", "Mouse", "mapped")
+AXES = ((0, "left X"), (1, "left Y"), (3, "right X"), (4, "right Y"))
+ABSINFO = "iiiiii"
+ABSINFO_SIZE = struct.calcsize(ABSINFO)
+
+
+def _ioc(direction: int, nr: int, size: int) -> int:
+    return (direction << 30) | (ord("E") << 8) | nr | (size << 16)
+
+
+def eviocgabs(code: int) -> int:
+    return _ioc(2, 0x40 + code, ABSINFO_SIZE)
+
+
+def eviocsabs(code: int) -> int:
+    return _ioc(1, 0xC0 + code, ABSINFO_SIZE)
+
+
+def iter_gamepads() -> list[tuple[str, str]]:
+    found: list[tuple[str, str]] = []
+    name = phys = handlers = ""
+    try:
+        text = open("/proc/bus/input/devices", encoding="utf-8", errors="replace").read()
+    except OSError:
+        return found
+    for block in text.split("\n\n"):
+        name = phys = handlers = ""
+        for line in block.splitlines():
+            if line.startswith("N: Name="):
+                name = line.split("=", 1)[1].strip().strip('"')
+            elif line.startswith("P: Phys="):
+                phys = line.split("=", 1)[1].strip()
+            elif line.startswith("H: Handlers="):
+                handlers = line.split("=", 1)[1].strip()
+        if not name:
+            continue
+        if name not in NAMES and not (
+            "Gamepad" in name and "AYN" in name and not any(s in name for s in SKIP)
+        ):
+            continue
+        event = ""
+        for tok in handlers.split():
+            if tok.startswith("event"):
+                event = f"/dev/input/{tok}"
+                break
+        if event:
+            found.append((event, f"{name} ({phys or '?'})"))
+    # Prefer the real MCU node
+    found.sort(key=lambda item: (0 if "rsinput-gamepad" in item[1] else 1, item[0]))
+    return found
+
+
+def apply_one(path: str, target: int) -> None:
+    fd = os.open(path, os.O_RDWR)
+    try:
+        for code, label in AXES:
+            buf = bytearray(ABSINFO_SIZE)
+            fcntl.ioctl(fd, eviocgabs(code), buf)
+            value, amin, amax, fuzz, flat, res = struct.unpack(ABSINFO, buf)
+            fcntl.ioctl(
+                fd,
+                eviocsabs(code),
+                struct.pack(ABSINFO, value, -target, target, fuzz, flat, res),
+            )
+            buf2 = bytearray(ABSINFO_SIZE)
+            fcntl.ioctl(fd, eviocgabs(code), buf2)
+            _, nmin, nmax, *_ = struct.unpack(ABSINFO, buf2)
+            print(f"  {label}: {amin}..{amax} → {nmin}..{nmax}")
+    finally:
+        os.close(fd)
+
+
+def status() -> int:
+    pads = iter_gamepads()
+    if not pads:
+        print("sm8550-fixpad: no rsinput gamepad found", file=sys.stderr)
+        return 1
+    for path, label in pads:
+        print(f"{label}  {path}")
+        fd = os.open(path, os.O_RDONLY)
+        try:
+            for code, axis in AXES:
+                buf = bytearray(ABSINFO_SIZE)
+                fcntl.ioctl(fd, eviocgabs(code), buf)
+                _v, amin, amax, *_ = struct.unpack(ABSINFO, buf)
+                print(f"  {axis}: {amin} .. {amax}")
+        finally:
+            os.close(fd)
+    return 0
+
+
+def apply(target: int) -> int:
+    pads = iter_gamepads()
+    if not pads:
+        print("sm8550-fixpad: no rsinput gamepad yet (ok at early boot)", file=sys.stderr)
+        return 0
+    path, label = pads[0]
+    print(f"sm8550-fixpad: {label}  {path}  target ±{target}")
+    apply_one(path, target)
+    return 0
+
+
+def main() -> int:
+    cmd = sys.argv[1] if len(sys.argv) > 1 else "apply"
+    if cmd in ("-h", "--help", "help"):
+        print("Usage: sm8550-fixpad apply [740]|status|restore")
+        return 0
+    if cmd == "status":
+        return status()
+    if cmd == "restore":
+        return apply(1408)
+    if cmd == "apply":
+        target = TARGET
+        if len(sys.argv) > 2:
+            target = int(sys.argv[2])
+        return apply(target)
+    print(f"unknown command: {cmd}", file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())

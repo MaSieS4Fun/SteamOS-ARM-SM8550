@@ -1,0 +1,11 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Decky Loader
+Comment=Install Decky for Steam Client stable or beta (asks which)
+Exec=konsole -e bash -c '/usr/bin/install-decky; echo; read -r -p "Press Enter to close..."'
+Icon=steamdeck-gaming-return
+Terminal=false
+Categories=System;Utility;X-ARM-Manager;
+Keywords=decky;plugin;loader;steam;box64;fex;homebrew;
+StartupNotify=true

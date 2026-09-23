@@ -1,0 +1,22 @@
+#!/bin/bash
+# Install initramfs scripts that write /boot/masi-boot.log when masi.bootlog=1.
+[[ "$1" == "prereqs" ]] && exit 0
+
+. /usr/share/initramfs-tools/hook-functions
+
+ROOT="${ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
+
+mkdir -p \
+	"${DESTDIR}/scripts/local-premount" \
+	"${DESTDIR}/scripts/local-bottom"
+
+install -m755 "${ROOT}/hooks/masi-bootlog-core" \
+	"${DESTDIR}/scripts/masi-bootlog-core"
+install -m755 "${ROOT}/hooks/masi-bootlog-premount" \
+	"${DESTDIR}/scripts/local-premount/masi-bootlog"
+install -m755 "${ROOT}/hooks/masi-bootlog-bottom" \
+	"${DESTDIR}/scripts/local-bottom/masi-bootlog"
+
+# Tools used by masi-bootlog-core
+copy_exec /bin/mount /bin/umount /bin/mkdir /bin/date /bin/sync /bin/grep \
+	/bin/kill /bin/sleep /bin/dmesg 2>/dev/null || true

@@ -1,0 +1,88 @@
+name: Issue report
+description: File an issue report
+body:
+- type: checkboxes
+  attributes:
+    label: Is there an existing issue for this?
+    description: Please search to see if an issue already exists for the bug you encountered.
+    options:
+    - label: I have searched the existing issues
+      required: true
+- type: checkboxes
+  attributes:
+    label: Are you using any gamescope patches or a forked version of gamescope?
+    description: Please confirm any issues occur on upstream gamescope without any patches before filing an issue here.
+    options:
+    - label: The issue occurs on upstream gamescope without any modifications
+      required: true
+- type: textarea
+  attributes:
+    label: Current Behavior
+    description: A concise description of the issue you're experiencing.
+  validations:
+    required: false
+- type: textarea
+  attributes:
+    label: Steps To Reproduce
+    description: Steps to reproduce the issue.
+    placeholder: |
+      1. Launch Dota 2 from Steam with the gamescope launch command `gamescope -f -r 120 -- %command%`...
+      2. Enter a bot match
+      3. Move the cursor around
+  validations:
+    required: false
+- type: textarea
+  attributes:
+    label: Hardware information
+    description: |
+      examples:
+        - **Distro**: SteamOS 3.6.15 (`cat /etc/os-release`)
+        - **CPU**: 32-core AMD Ryzen Threadripper 7970X (`inxi` or `cat /proc/cpuinfo`)
+        - **GPU**: Advanced Micro Devices [AMD/ATI] Navi 31 [Radeon RX 7900 XT/7900 XTX/7900M] (`lspci -nn | grep VGA` or `lshw -C display -numeric` or `vulkaninfo --summary | grep deviceName`
+        - **Driver Version**: Mesa 24.2.3 or NVIDIA 560.35.03 (`vulkaninfo --summary | grep driverInfo` or `nvidia-smi`)
+    value: |
+        - Distro: 
+        - CPU: 
+        - GPU: 
+        - Driver Version: 
+    render: markdown
+  validations:
+    required: false
+- type: textarea
+  attributes:
+    label: Software information
+    description: |
+      examples:
+        - **Desktop environment**: KDE 6.1.5
+        - **Session type**: wayland (`echo $XDG_SESSION_TYPE`)
+        - **Gamescope version**: gamescope version 3.15.9-8-gddf0d76 (gcc 14.2.1) (find this with `gamescope --version`)
+        - **Gamescope launch command(s)**: `gamescope -f -h 2160 -w 7680 -r 120 -- %command%`
+    value: |
+        - Desktop environment: 
+        - Session type: 
+        - Gamescope version: 
+        - Gamescope launch command(s): 
+    render: markdown
+  validations:
+    required: false
+- type: checkboxes
+  id: backend
+  attributes:
+    label: Which gamescope backends have the issue you are reporting?
+    description: You may select more than one.
+    options:
+      - label: Wayland (default for nested gamescope)
+      - label: DRM (default for embedded gamescope, i.e. gamescope-session)
+      - label: SDL
+      - label: OpenVR
+  validations:
+    required: true
+- type: textarea
+  attributes:
+    label: Logging, screenshots, or anything else
+    description: |
+      Please include any relevant logging or screenshots that will give us more context about the issue you are reporting.
+
+      Tip: You can attach images or log files by clicking this area to highlight it and then dragging files in.
+  validations:
+    required: false

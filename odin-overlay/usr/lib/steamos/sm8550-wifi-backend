@@ -1,0 +1,55 @@
+#!/bin/bash
+# Pin NetworkManager to wpa_supplicant. Steam/steamos-manager rewrites
+# 99-valve-wifi-backend.conf to iwd; this kernel cannot run iwd
+# (no CONFIG_CRYPTO_USER_API_HASH / SKCIPHER).
+# Do not nmcli connect/reconnect here: that flaps wlan0 and Steam stays
+# on the library spinner (Lost device / AppStore Send failed).
+set -u
+
+BODY='[connection]
+wifi.powersave=2
+[device]
+wifi.backend=wpa_supplicant
+'
+
+write_one() {
+  local dest="$1"
+  mkdir -p "$(dirname "$dest")"
+  if [[ -f "$dest" ]] && cmp -s <(printf '%s' "$BODY") "$dest"; then
+    chown root:root "$dest" 2>/dev/null || true
+    chmod 0644 "$dest" 2>/dev/null || true
+    return 0
+  fi
+  printf '%s' "$BODY" >"$dest"
+  chown root:root "$dest" 2>/dev/null || true
+  chmod 0644 "$dest"
+}
+
+write_one /etc/NetworkManager/conf.d/99-valve-wifi-backend.conf
+if [[ -d /var/lib/overlays/etc/upper ]]; then
+  write_one /var/lib/overlays/etc/upper/NetworkManager/conf.d/99-valve-wifi-backend.conf
+fi
+if [[ -d /usr/lib/NetworkManager/conf.d ]]; then
+  write_one /usr/lib/NetworkManager/conf.d/40-sm8550-wifi.conf
+fi
+
+ln -sfn /dev/null /etc/systemd/system/iwd.service 2>/dev/null || true
+rm -f /etc/systemd/system/multi-user.target.wants/iwd.service 2>/dev/null || true
+
+mkdir -p /etc/systemd/system/multi-user.target.wants \
+  /etc/systemd/system/NetworkManager.service.wants
+if [[ -f /usr/lib/systemd/system/wpa_supplicant.service ]]; then
+  ln -sfn /usr/lib/systemd/system/wpa_supplicant.service \
+    /etc/systemd/system/multi-user.target.wants/wpa_supplicant.service
+  ln -sfn /usr/lib/systemd/system/wpa_supplicant.service \
+    /etc/systemd/system/NetworkManager.service.wants/wpa_supplicant.service
+fi
+
+rfkill unblock wifi bluetooth 2>/dev/null || true
+
+if command -v systemctl >/dev/null 2>&1; then
+  systemctl stop iwd.service 2>/dev/null || true
+  systemctl start wpa_supplicant.service 2>/dev/null || true
+fi
+
+exit 0

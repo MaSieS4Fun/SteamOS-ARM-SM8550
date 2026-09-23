@@ -1,0 +1,12 @@
+[Unit]
+Description=MaSi gaming profile: UFS awake + CPU/GPU performance
+Documentation=https://github.com/MaSieS4Fun/MaSi-OS-Kernel-Updater
+After=local-fs.target sysinit.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/masi-ufs-gaming-keepalive
+
+[Install]
+WantedBy=multi-user.target

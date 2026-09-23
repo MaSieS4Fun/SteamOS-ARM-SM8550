@@ -1,0 +1,14 @@
+#!/bin/bash
+# Power the WCN7850 UART HCI. RFCOMM is not in this kernel (HFP profiles
+# fail); A2DP/LE still need the adapter up for Steam's BT list.
+# Plasma is not required — this is bluez + rfkill only.
+set -u
+modprobe -q bluetooth btqca hci_uart 2>/dev/null || true
+rfkill unblock bluetooth wifi 2>/dev/null || true
+if command -v hciconfig >/dev/null 2>&1; then
+  timeout 5 hciconfig hci0 up 2>/dev/null || true
+fi
+if command -v bluetoothctl >/dev/null 2>&1; then
+  timeout 10 bluetoothctl power on >/dev/null 2>&1 || true
+fi
+exit 0

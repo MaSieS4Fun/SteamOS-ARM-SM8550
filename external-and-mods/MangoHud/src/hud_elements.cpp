@@ -1,0 +1,2172 @@
+#include <spdlog/spdlog.h>
+#include <algorithm>
+#include <functional>
+#include <sstream>
+#include <cmath>
+#include <map>
+#include "overlay.h"
+#include "overlay_params.h"
+#include "hud_elements.h"
+#include "logging.h"
+#include "battery.h"
+#include "device.h"
+#include "cpu.h"
+#include "gpu.h"
+#include "memory.h"
+#include "iostats.h"
+#include "mesa/util/macros.h"
+#include "string_utils.h"
+#include "app/mangoapp.h"
+#include <IconsForkAwesome.h>
+#include "version.h"
+#include "blacklist.h"
+#ifdef __linux__
+#include "implot.h"
+#endif
+#include "amdgpu.h"
+#include "fps_metrics.h"
+#include "fex.h"
+#include "ftrace.h"
+#include "winesync.h"
+#include "fps_limiter.h"
+
+#define CHAR_CELSIUS    "\xe2\x84\x83"
+#define CHAR_FAHRENHEIT "\xe2\x84\x89"
+
+using namespace std;
+
+// Cut from https://github.com/ocornut/imgui/pull/2943
+// Probably move to ImGui
+static float SRGBToLinear(float in)
+{
+    if (in <= 0.04045f)
+        return in / 12.92f;
+    else
+        return powf((in + 0.055f) / 1.055f, 2.4f);
+}
+
+static ImVec4 SRGBToLinear(ImVec4 col)
+{
+    col.x = SRGBToLinear(col.x);
+    col.y = SRGBToLinear(col.y);
+    col.z = SRGBToLinear(col.z);
+    // Alpha component is already linear
+
+    return col;
+}
+
+static float LinearToPQ(float in)
+{
+    const float m1 = 0.1593017578125f;
+    const float m2 = 78.84375f;
+    const float c1 = 0.8359375f;
+    const float c2 = 18.8515625f;
+    const float c3 = 18.6875f;
+    /* target 200 cd/m^2 as our maximum rather than 10000 cd/m^2 */
+    const float targetL = 200.f;
+    const float maxL = 10000.0f;
+
+    in = powf(in * (targetL / maxL), m1);
+    in = (c1 + c2 * in) / (1.0f + c3 * in);
+    return powf(in, m2);
+}
+
+static double dot(const ImVec4& a, const ImVec4& b)
+{
+    return a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w;
+}
+
+static ImVec4 SRGBtoBT2020(ImVec4 col)
+{
+    const ImVec4 to2020[4] = {
+        {0.627392, 0.32903, 0.0432691, 0.0},
+        {0.0691229, 0.9195232, 0.0113204, 0.0},
+        {0.0164229, 0.088042, 0.8956166, 0.0},
+        {0.0, 0.0, 0.0, 1.0}
+    };
+
+    col.x = dot(to2020[0], col);
+    col.y = dot(to2020[1], col);
+    col.z = dot(to2020[2], col);
+    col.w = dot(to2020[3], col);
+
+    return col;
+}
+
+static ImVec4 LinearToPQ(ImVec4 col)
+{
+    col = SRGBtoBT2020(col);
+
+    col.x = LinearToPQ(col.x);
+    col.y = LinearToPQ(col.y);
+    col.z = LinearToPQ(col.z);
+
+    return col;
+}
+
+static float LinearToHLG(float in)
+{
+    const float a = 0.17883277f;
+    const float b = 0.28466892f;
+    const float c = 0.55991073f;
+
+    if (in <= 1.0f/12.0f)
+        return sqrtf(3.0f * in);
+    else
+        return a * logf(12.0f * in - b) + c;
+}
+
+static ImVec4 LinearToHLG(ImVec4 col)
+{
+    col = SRGBtoBT2020(col);
+
+    col.x = LinearToHLG(col.x);
+    col.y = LinearToHLG(col.y);
+    col.z = LinearToHLG(col.z);
+
+    return col;
+}
+
+template<typename T, typename R = float>
+R format_units(T value, const char*& unit)
+{
+    static const char* const units[] = {"B", "KiB", "MiB", "GiB", "TiB", "PiB", "EiB", "ZiB"};
+    size_t u = 0;
+    R out_value = value;
+    while (out_value > 1023 && u < ARRAY_SIZE(units)) {
+        out_value /= 1024;
+        ++u;
+    }
+    unit = units[u];
+    return out_value;
+}
+
+void HudElements::convert_colors(const struct overlay_params& params)
+{
+    HUDElements.colors.update = false;
+    auto convert = [&params](unsigned color) -> ImVec4 {
+        ImVec4 fc = ImGui::ColorConvertU32ToFloat4(color);
+        fc.w = params.alpha;
+        if (HUDElements.colors.convert)
+        {
+            switch (params.transfer_function)
+            {
+                case PQ:
+                    fc = SRGBToLinear(fc);
+                    return LinearToPQ(fc);
+                case HLG:
+                    fc = SRGBToLinear(fc);
+                    return LinearToHLG(fc);
+                case SRGB:
+                    return SRGBToLinear(fc);
+                default: break;
+            }
+        }
+        return fc;
+    };
+
+    HUDElements.colors.cpu = convert(params.cpu_color);
+    HUDElements.colors.gpu = convert(params.gpu_color);
+    HUDElements.colors.vram = convert(params.vram_color);
+    HUDElements.colors.ram = convert(params.ram_color);
+    HUDElements.colors.engine = convert(params.engine_color);
+    HUDElements.colors.io = convert(params.io_color);
+    HUDElements.colors.frametime = convert(params.frametime_color);
+    HUDElements.colors.background = convert(params.background_color);
+    HUDElements.colors.text = convert(params.text_color);
+    HUDElements.colors.media_player = convert(params.media_player_color);
+    HUDElements.colors.wine = convert(params.wine_color);
+    HUDElements.colors.horizontal_separator = convert(params.horizontal_separator_color);
+    HUDElements.colors.battery = convert(params.battery_color);
+    HUDElements.colors.gpu_load_low = convert(params.gpu_load_color[0]);
+    HUDElements.colors.gpu_load_med = convert(params.gpu_load_color[1]);
+    HUDElements.colors.gpu_load_high = convert(params.gpu_load_color[2]);
+    HUDElements.colors.cpu_load_low = convert(params.cpu_load_color[0]);
+    HUDElements.colors.cpu_load_med = convert(params.cpu_load_color[1]);
+    HUDElements.colors.cpu_load_high = convert(params.cpu_load_color[2]);
+    HUDElements.colors.fps_value_low = convert(params.fps_color[0]);
+    HUDElements.colors.fps_value_med = convert(params.fps_color[1]);
+    HUDElements.colors.fps_value_high = convert(params.fps_color[2]);
+    HUDElements.colors.text_outline = convert(params.text_outline_color);
+    HUDElements.colors.network = convert(params.network_color);
+
+    ImGuiStyle& style = ImGui::GetStyle();
+    style.Colors[ImGuiCol_PlotLines] = convert(params.frametime_color);
+    style.Colors[ImGuiCol_PlotHistogram] = convert(params.frametime_color);
+    style.Colors[ImGuiCol_WindowBg]  = convert(params.background_color);
+    style.Colors[ImGuiCol_Text] = convert(params.text_color);
+    style.CellPadding.y = params.cellpadding_y * real_font_size.y;
+    style.WindowRounding = params.round_corners;
+    style.AntiAliasedLines = false;
+}
+
+void HudElements::convert_colors(bool do_conv, const struct overlay_params& params)
+{
+    HUDElements.colors.convert = do_conv;
+    convert_colors(params);
+}
+
+void HudElements::TextColored(ImVec4 col, const char *fmt, ...){
+    auto textColor = ImGui::ColorConvertFloat4ToU32(col);
+    char buffer[128] {};
+
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(buffer, sizeof(buffer), fmt, args);
+    va_end(args);
+
+    RenderOutlinedText(buffer, textColor);
+}
+
+int HudElements::convert_to_fahrenheit(int celsius){
+    int fahrenheit = (celsius * 9 / 5) + 32;
+    return fahrenheit;
+}
+
+static void ImguiNextColumnFirstItem()
+{
+    ImGui::TableNextColumn();
+    HUDElements.table_columns_count += 1;
+}
+/**
+* Go to next column or second column on new row
+*/
+static void ImguiNextColumnOrNewRow(int column = -1)
+{
+    if (column > -1 && column < ImGui::TableGetColumnCount())
+        ImGui::TableSetColumnIndex(column);
+    else
+    {
+        ImGui::TableNextColumn();
+        HUDElements.table_columns_count += 1;
+        if (ImGui::TableGetColumnIndex() == 0 && ImGui::TableGetColumnCount() > 1) {
+            ImGui::TableNextColumn();
+            HUDElements.table_columns_count += 1;
+        }
+    }
+}
+
+static bool ImGuiTextOverflow(const char* text) {
+    return ImGui::CalcTextSize(text).x > ImGui::CalcItemWidth() + HUDElements.ralign_width / 2;
+}
+// This function is only used in battery and battery is not used in windows builds
+// Battery should probably be reworked to not use this func since nothing else needs it
+#ifdef __linux__
+static void ImGuiTableSetColumnIndex(int column)
+{
+    ImGui::TableSetColumnIndex(std::max(0, std::min(column, ImGui::TableGetColumnCount() - 1)));
+}
+#endif
+
+void HudElements::time(){
+    if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_time]){
+        if (!HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_horizontal] &&
+            !HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_hud_compact] &&
+            !HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_time_no_label]){
+            ImguiNextColumnFirstItem();
+            HUDElements.TextColored(HUDElements.colors.text, "Time");
+            ImguiNextColumnOrNewRow();
+            right_aligned_text(HUDElements.colors.text, HUDElements.ralign_width, "%s", HUDElements.sw_stats->time.c_str());
+        } else {
+            ImguiNextColumnFirstItem();
+            HUDElements.TextColored(HUDElements.colors.text, "%s", HUDElements.sw_stats->time.c_str());
+        }
+    }
+}
+
+void HudElements::version(){
+    if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_version]){
+        ImguiNextColumnFirstItem();
+        HUDElements.TextColored(HUDElements.colors.text, "%s", MANGOHUD_VERSION);
+    }
+}
+
+void HudElements::gpu_stats(){
+    if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_gpu_stats] && gpus){
+        for (auto& gpu : gpus->selected_gpus()) {
+            ImguiNextColumnFirstItem();
+            HUDElements.TextColored(HUDElements.colors.gpu, "%s", gpu->gpu_text().c_str());
+
+            ImguiNextColumnOrNewRow();
+            auto text_color = HUDElements.colors.text;
+            if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_gpu_load_change]){
+                struct LOAD_DATA gpu_data = {
+                    HUDElements.colors.gpu_load_low,
+                    HUDElements.colors.gpu_load_med,
+                    HUDElements.colors.gpu_load_high,
+                    HUDElements.params->gpu_load_value[0],
+                    HUDElements.params->gpu_load_value[1]
+                };
+
+                auto load_color = change_on_load_temp(gpu_data, gpu->metrics.load);
+                right_aligned_text(load_color, HUDElements.ralign_width, "%i", gpu->metrics.load);
+                ImGui::SameLine(0, 1.0f);
+                HUDElements.TextColored(load_color,"%%");
+            }
+            else {
+                right_aligned_text(text_color, HUDElements.ralign_width, "%i", gpu->metrics.load);
+                ImGui::SameLine(0, 1.0f);
+                HUDElements.TextColored(text_color,"%%");
+                // ImGui::SameLine(150);
+                // ImGui::Text("%s", "%");
+            }
+
+            if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_gpu_temp]){
+                ImguiNextColumnOrNewRow();
+                if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_temp_fahrenheit])
+                    right_aligned_text(text_color, HUDElements.ralign_width, "%i", HUDElements.convert_to_fahrenheit(gpu->metrics.temp));
+                else
+                    right_aligned_text(text_color, HUDElements.ralign_width, "%i", gpu->metrics.temp);
+                ImGui::SameLine(0, 1.0f);
+                if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_hud_compact])
+                    HUDElements.TextColored(HUDElements.colors.text, "°");
+                else
+                    if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_temp_fahrenheit])
+                        HUDElements.TextColored(HUDElements.colors.text, "°F");
+                    else
+                        HUDElements.TextColored(HUDElements.colors.text, "°C");
+            }
+
+            if (gpu->metrics.junction_temp > -1 && HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_gpu_junction_temp]) {
+                ImguiNextColumnOrNewRow();
+                if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_temp_fahrenheit])
+                    right_aligned_text(text_color, HUDElements.ralign_width, "%i", HUDElements.convert_to_fahrenheit(gpu->metrics.junction_temp));
+                else
+                    right_aligned_text(text_color, HUDElements.ralign_width, "%i", gpu->metrics.junction_temp);
+                ImGui::SameLine(0, 1.0f);
+                if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_temp_fahrenheit])
+                    HUDElements.TextColored(HUDElements.colors.text, "°F");
+                else
+                    HUDElements.TextColored(HUDElements.colors.text, "°C");
+                ImGui::SameLine(0, 1.0f);
+                ImGui::PushFont(HUDElements.sw_stats->font_small);
+                HUDElements.TextColored(HUDElements.colors.text, "Jnc");
+                ImGui::PopFont();
+            }
+
+            if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_gpu_fan] && !gpu->is_apu()){
+                ImguiNextColumnOrNewRow();
+                right_aligned_text(text_color, HUDElements.ralign_width, "%i", gpu->metrics.fan_speed);
+                ImGui::SameLine(0, 1.0f);
+                if (gpu->metrics.fan_rpm) {
+                    ImGui::PushFont(HUDElements.sw_stats->font_small);
+                    HUDElements.TextColored(HUDElements.colors.text, "RPM");
+                } else {
+                    HUDElements.TextColored(HUDElements.colors.text, "%%");
+                    ImGui::PushFont(HUDElements.sw_stats->font_small);
+                    ImGui::SameLine(0, 1.0f);
+                    HUDElements.TextColored(HUDElements.colors.text, "FAN");
+                }
+                ImGui::PopFont();
+            }
+
+            if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_gpu_core_clock]){
+                ImguiNextColumnOrNewRow();
+                right_aligned_text(text_color, HUDElements.ralign_width, "%i", gpu->metrics.CoreClock);
+                ImGui::SameLine(0, 1.0f);
+                ImGui::PushFont(HUDElements.sw_stats->font_small);
+                HUDElements.TextColored(HUDElements.colors.text, "MHz");
+                ImGui::PopFont();
+            }
+
+            if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_gpu_power]) {
+                ImguiNextColumnOrNewRow();
+                char str[16];
+                snprintf(str, sizeof(str), "%.1f", gpu->metrics.powerUsage);
+                if (strlen(str) > 4)
+                    right_aligned_text(text_color, HUDElements.ralign_width, "%.0f", gpu->metrics.powerUsage);
+                else
+                    right_aligned_text(text_color, HUDElements.ralign_width, "%.1f", gpu->metrics.powerUsage);
+                ImGui::SameLine(0, 1.0f);
+                ImGui::PushFont(HUDElements.sw_stats->font_small);
+                if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_gpu_power_limit])
+                    HUDElements.TextColored(HUDElements.colors.text, "/%.0fW", gpu->metrics.powerLimit);
+                else
+                    HUDElements.TextColored(HUDElements.colors.text, "W");
+                ImGui::PopFont();
+            }
+
+            if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_gpu_efficiency]) {
+                ImguiNextColumnOrNewRow();
+                float efficiency;
+                const char* efficiency_unit;
+                if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_flip_efficiency]) {
+                    efficiency=gpu->metrics.powerUsage/HUDElements.sw_stats->fps;
+                    efficiency_unit="J/F";
+                } else {
+                    efficiency=HUDElements.sw_stats->fps/gpu->metrics.powerUsage;
+                    efficiency_unit="F/J";
+                }
+                right_aligned_text(text_color, HUDElements.ralign_width, "%.2f", efficiency);
+                ImGui::SameLine(0, 1.0f);
+                ImGui::PushFont(HUDElements.sw_stats->font_small);
+                HUDElements.TextColored(HUDElements.colors.text, efficiency_unit);
+                ImGui::PopFont();
+            }
+
+            if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_gpu_voltage]) {
+                ImguiNextColumnOrNewRow();
+                right_aligned_text(text_color, HUDElements.ralign_width, "%i", gpu->metrics.voltage);
+                ImGui::SameLine(0, 1.0f);
+                ImGui::PushFont(HUDElements.sw_stats->font_small);
+                HUDElements.TextColored(HUDElements.colors.text, "mV");
+                ImGui::PopFont();
+            }
+            if (!HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_horizontal])
+                ImGui::TableNextRow();
+        }
+    }
+}
+
+void HudElements::cpu_stats(){
+    if(HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_cpu_stats]){
+        ImguiNextColumnFirstItem();
+        const char* cpu_text;
+        if (HUDElements.params->cpu_text.empty())
+            cpu_text = "CPU";
+        else
+            cpu_text = HUDElements.params->cpu_text.c_str();
+
+        HUDElements.TextColored(HUDElements.colors.cpu, "%s", cpu_text);
+        ImguiNextColumnOrNewRow();
+        auto text_color = HUDElements.colors.text;
+        if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_cpu_load_change]){
+            int cpu_load_percent = int(cpuStats.GetCPUDataTotal().percent);
+            struct LOAD_DATA cpu_data = {
+                HUDElements.colors.cpu_load_low,
+                HUDElements.colors.cpu_load_med,
+                HUDElements.colors.cpu_load_high,
+                HUDElements.params->cpu_load_value[0],
+                HUDElements.params->cpu_load_value[1]
+            };
+
+            auto load_color = change_on_load_temp(cpu_data, cpu_load_percent);
+            right_aligned_text(load_color, HUDElements.ralign_width, "%d", cpu_load_percent);
+            ImGui::SameLine(0, 1.0f);
+            HUDElements.TextColored(load_color, "%%");
+        }
+        else {
+            right_aligned_text(text_color, HUDElements.ralign_width, "%d", int(cpuStats.GetCPUDataTotal().percent));
+            ImGui::SameLine(0, 1.0f);
+            HUDElements.TextColored(HUDElements.colors.text, "%%");
+        }
+
+        if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_cpu_temp]){
+            ImguiNextColumnOrNewRow();
+            if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_temp_fahrenheit])
+                right_aligned_text(HUDElements.colors.text, HUDElements.ralign_width, "%i", HUDElements.convert_to_fahrenheit(cpuStats.GetCPUDataTotal().temp));
+            else
+                right_aligned_text(HUDElements.colors.text, HUDElements.ralign_width, "%i", cpuStats.GetCPUDataTotal().temp);
+            ImGui::SameLine(0, 1.0f);
+            if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_hud_compact])
+                HUDElements.TextColored(HUDElements.colors.text, "°");
+            else
+                if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_temp_fahrenheit])
+                    HUDElements.TextColored(HUDElements.colors.text, "°F");
+                else
+                    HUDElements.TextColored(HUDElements.colors.text, "°C");
+        }
+
+        if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_cpu_mhz]){
+            ImguiNextColumnOrNewRow();
+            right_aligned_text(HUDElements.colors.text, HUDElements.ralign_width, "%i", cpuStats.GetCPUDataTotal().cpu_mhz);
+            ImGui::SameLine(0, 1.0f);
+            ImGui::PushFont(HUDElements.sw_stats->font_small);
+            HUDElements.TextColored(HUDElements.colors.text, "MHz");
+            ImGui::PopFont();
+        }
+
+        if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_cpu_power]){
+            ImguiNextColumnOrNewRow();
+            char str[16];
+            snprintf(str, sizeof(str), "%.1f", cpuStats.GetCPUDataTotal().power);
+            if (strlen(str) > 4)
+                right_aligned_text(HUDElements.colors.text, HUDElements.ralign_width, "%.0f", cpuStats.GetCPUDataTotal().power);
+            else
+                right_aligned_text(HUDElements.colors.text, HUDElements.ralign_width, "%.1f", cpuStats.GetCPUDataTotal().power);
+            ImGui::SameLine(0, 1.0f);
+            ImGui::PushFont(HUDElements.sw_stats->font_small);
+            HUDElements.TextColored(HUDElements.colors.text, "W");
+            ImGui::PopFont();
+        }
+
+        if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_cpu_efficiency]) {
+            ImguiNextColumnOrNewRow();
+            float efficiency;
+            const char* efficiency_unit;
+            if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_flip_efficiency]) {
+                efficiency=cpuStats.GetCPUDataTotal().power/HUDElements.sw_stats->fps;
+                efficiency_unit="J/F";
+            } else {
+                efficiency=HUDElements.sw_stats->fps/cpuStats.GetCPUDataTotal().power;
+                efficiency_unit="F/J";
+            }
+            right_aligned_text(text_color, HUDElements.ralign_width, "%.2f", efficiency);
+            ImGui::SameLine(0, 1.0f);
+            ImGui::PushFont(HUDElements.sw_stats->font_small);
+            HUDElements.TextColored(HUDElements.colors.text, efficiency_unit);
+            ImGui::PopFont();
+        }
+    }
+}
+
+
+static float get_core_load_stat(void*,int);
+static float get_core_load_stat(void *data, int idx){
+    return ((CPUStats *)data)->GetCPUData().at(idx).percent;
+}
+
+void HudElements::core_load(){
+    if (!HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_core_load])
+        return;
+
+    if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_core_bars]){
+        ImguiNextColumnFirstItem();
+        ImGui::PushFont(HUDElements.sw_stats->font_small);
+        if (!HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_horizontal] && !HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_hud_compact]){
+            ImGui::Dummy(ImVec2(0.0f, real_font_size.y));
+            HUDElements.TextColored(HUDElements.colors.cpu, "CPU Cores");
+            ImGui::TableSetColumnIndex(ImGui::TableGetColumnCount() - 1);
+            ImGui::Dummy(ImVec2(0.0f, real_font_size.y));
+            ImguiNextColumnFirstItem();
+        }
+        char hash[40];
+        snprintf(hash, sizeof(hash), "##%s", overlay_param_names[OVERLAY_PARAM_ENABLED_core_bars]);
+        ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+        float width, height = 0;
+        if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_horizontal]){
+            width = 150;
+            height = HUDElements.params->font_size;
+        } else {
+            width = (ImGui::GetWindowContentRegionMax().x - ImGui::GetWindowContentRegionMin().x);
+            height = 50;
+        }
+
+        if (ImGui::BeginChild("core_bars_window", ImVec2(width, height))) {
+            ImGui::PlotHistogram(hash, get_core_load_stat, &cpuStats,
+                                cpuStats.GetCPUData().size(), 0,
+                                NULL, 0.0, 100.0,
+                                ImVec2(width, height));
+        }
+        ImGui::EndChild();
+        ImGui::PopFont();
+        ImGui::PopStyleColor();
+    } else {
+        for (const CPUData &cpuData : cpuStats.GetCPUData())
+        {
+            ImguiNextColumnFirstItem();
+            HUDElements.TextColored(HUDElements.colors.cpu, "CPU");
+            ImGui::SameLine(0, 1.0f);
+            ImGui::PushFont(HUDElements.sw_stats->font_small);
+
+            if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_core_type])
+                HUDElements.TextColored(HUDElements.colors.cpu, cpuData.label.c_str());
+            else
+                HUDElements.TextColored(HUDElements.colors.cpu, "%i", cpuData.cpu_id);
+
+            ImGui::PopFont();
+            ImguiNextColumnOrNewRow();
+            auto text_color = HUDElements.colors.text;
+            if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_core_load_change]){
+                int cpu_load_percent = int(cpuData.percent);
+                struct LOAD_DATA cpu_data = {
+                    HUDElements.colors.cpu_load_low,
+                    HUDElements.colors.cpu_load_med,
+                    HUDElements.colors.cpu_load_high,
+                    HUDElements.params->cpu_load_value[0],
+                    HUDElements.params->cpu_load_value[1]
+                };
+                auto load_color = change_on_load_temp(cpu_data, cpu_load_percent);
+                right_aligned_text(load_color, HUDElements.ralign_width, "%d", cpu_load_percent);
+                ImGui::SameLine(0, 1.0f);
+                HUDElements.TextColored(load_color, "%%");
+                ImguiNextColumnOrNewRow();
+            }
+            else {
+                right_aligned_text(text_color, HUDElements.ralign_width, "%i", int(cpuData.percent));
+                ImGui::SameLine(0, 1.0f);
+                HUDElements.TextColored(HUDElements.colors.text, "%%");
+                ImguiNextColumnOrNewRow();
+            }
+            right_aligned_text(HUDElements.colors.text, HUDElements.ralign_width, "%i", cpuData.mhz);
+            ImGui::SameLine(0, 1.0f);
+            ImGui::PushFont(HUDElements.sw_stats->font_small);
+            HUDElements.TextColored(HUDElements.colors.text, "MHz");
+            ImGui::PopFont();
+        }
+    }
+}
+
+void HudElements::io_stats(){
+#ifndef _WIN32
+    if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_io_read] || HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_io_write]){
+        ImguiNextColumnFirstItem();
+        if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_io_read] && !HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_io_write])
+            HUDElements.TextColored(HUDElements.colors.io, "IO RD");
+        else if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_io_read] && HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_io_write])
+            HUDElements.TextColored(HUDElements.colors.io, "IO RW");
+        else if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_io_write] && !HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_io_read])
+            HUDElements.TextColored(HUDElements.colors.io, "IO WR");
+
+        if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_io_read]){
+            ImguiNextColumnOrNewRow();
+            const float val = g_io_stats.per_second.read;
+            right_aligned_text(HUDElements.colors.text, HUDElements.ralign_width, val < 100 ? "%.1f" : "%.f", val);
+            ImGui::SameLine(0,1.0f);
+            ImGui::PushFont(HUDElements.sw_stats->font_small);
+            HUDElements.TextColored(HUDElements.colors.text, "MiB/s");
+            ImGui::PopFont();
+        }
+        if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_io_write]){
+            ImguiNextColumnOrNewRow();
+            const float val = g_io_stats.per_second.write;
+            right_aligned_text(HUDElements.colors.text, HUDElements.ralign_width, val < 100 ? "%.1f" : "%.f", val);
+            ImGui::SameLine(0,1.0f);
+            ImGui::PushFont(HUDElements.sw_stats->font_small);
+            HUDElements.TextColored(HUDElements.colors.text, "MiB/s");
+            ImGui::PopFont();
+        }
+    }
+#endif
+}
+
+void HudElements::vram(){
+    if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_vram] && gpus){
+        size_t i = 0;
+        if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_gpu_stats]){
+            for (auto& gpu : gpus->selected_gpus()) {
+                ImguiNextColumnFirstItem();
+                // Just iterate through the user selected GPUs
+                if (!HUDElements.params->gpu_list.empty())
+                    for (auto& gpu_index : HUDElements.params->gpu_list)
+                        if (gpu_index < gpus->available_gpus.size())
+                            if (i != gpu_index)
+                                continue;
+
+
+                HUDElements.TextColored(HUDElements.colors.vram, gpu->vram_text().c_str());
+
+                ImguiNextColumnOrNewRow();
+                // Add gtt_used to vram usage for APUs
+                if (gpu->is_apu())
+                    right_aligned_text(HUDElements.colors.text, HUDElements.ralign_width, "%.1f", gpu->metrics.sys_vram_used + gpu->metrics.gtt_used);
+                else
+                    right_aligned_text(HUDElements.colors.text, HUDElements.ralign_width, "%.1f", gpu->metrics.sys_vram_used);
+                if (!HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_hud_compact]){
+                    ImGui::SameLine(0,1.0f);
+                    ImGui::PushFont(HUDElements.sw_stats->font_small);
+                    HUDElements.TextColored(HUDElements.colors.text, "GiB");
+                    ImGui::PopFont();
+                }
+
+                if (gpu->metrics.memory_temp > -1 && HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_gpu_mem_temp]) {
+                    ImguiNextColumnOrNewRow();
+                    if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_temp_fahrenheit])
+                        right_aligned_text(HUDElements.colors.text, HUDElements.ralign_width, "%i", HUDElements.convert_to_fahrenheit(gpu->metrics.memory_temp));
+                    else
+                        right_aligned_text(HUDElements.colors.text, HUDElements.ralign_width, "%i", gpu->metrics.memory_temp);
+                    ImGui::SameLine(0, 1.0f);
+                    if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_temp_fahrenheit])
+                        HUDElements.TextColored(HUDElements.colors.text, "°F");
+                    else
+                        HUDElements.TextColored(HUDElements.colors.text, "°C");
+                }
+
+                if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_gpu_mem_clock]){
+                    ImguiNextColumnOrNewRow();
+                    right_aligned_text(HUDElements.colors.text, HUDElements.ralign_width, "%i", gpu->metrics.MemClock);
+                    ImGui::SameLine(0, 1.0f);
+                    ImGui::PushFont(HUDElements.sw_stats->font_small);
+                    HUDElements.TextColored(HUDElements.colors.text, "MHz");
+                    ImGui::PopFont();
+                }
+                if (!HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_horizontal])
+                    ImGui::TableNextRow();
+                i++;
+            }
+        }
+    }
+}
+
+void HudElements::proc_vram() {
+    if (
+        !HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_proc_vram] ||
+        !HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_gpu_stats]
+    )
+        return;
+
+    if (!gpus)
+        return;
+
+    size_t idx = 0;
+    for (const std::shared_ptr<GPU>& gpu : gpus->selected_gpus()) {
+        ImguiNextColumnFirstItem();
+
+        if (gpus->selected_gpus().size() > 1)
+            HUDElements.TextColored(HUDElements.colors.vram, "PVRAM%i", idx++);
+        else
+            HUDElements.TextColored(HUDElements.colors.vram, "PVRAM");
+
+        ImguiNextColumnOrNewRow();
+
+        right_aligned_text(
+            HUDElements.colors.text, HUDElements.ralign_width, "%.1f", gpu->metrics.proc_vram_used
+        );
+
+        if (!HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_hud_compact]) {
+            ImGui::SameLine(0, 1.0f);
+            ImGui::PushFont(HUDElements.sw_stats->font_small);
+            HUDElements.TextColored(HUDElements.colors.text, "GiB");
+            ImGui::PopFont();
+        }
+
+        // show only if vram is not enabled
+        if (
+            !HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_vram] &&
+            HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_gpu_mem_temp]
+        ) {
+            ImguiNextColumnOrNewRow();
+
+            int temp;
+            std::string unit;
+
+            if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_temp_fahrenheit]) {
+                temp = HUDElements.convert_to_fahrenheit(gpu->metrics.memory_temp);
+                unit = "°F";
+            } else {
+                temp = gpu->metrics.memory_temp;
+                unit = "°C";
+            }
+
+            right_aligned_text(HUDElements.colors.text, HUDElements.ralign_width, "%i", temp);
+
+            ImGui::SameLine(0, 1.0f);
+
+            HUDElements.TextColored(HUDElements.colors.text, unit.c_str());
+        }
+
+        if (!HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_horizontal])
+            ImGui::TableNextRow();
+    }
+}
+
+void HudElements::ram(){
+#ifdef __linux__
+    if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_ram] ||
+        HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_ram_temp]) {
+        ImguiNextColumnFirstItem();
+        HUDElements.TextColored(HUDElements.colors.ram, "RAM");
+    }
+
+    if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_ram]) {
+        ImguiNextColumnOrNewRow();
+        right_aligned_text(HUDElements.colors.text, HUDElements.ralign_width, "%.1f", memused);
+        if (!HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_hud_compact]){
+            ImGui::SameLine(0, 1.0f);
+            ImGui::PushFont(HUDElements.sw_stats->font_small);
+            HUDElements.TextColored(HUDElements.colors.text, "GiB");
+            ImGui::PopFont();
+        }
+    }
+
+    if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_ram] && HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_swap]){
+        ImguiNextColumnOrNewRow();
+        right_aligned_text(HUDElements.colors.text, HUDElements.ralign_width, "%.1f", swapused);
+        ImGui::SameLine(0, 1.0f);
+        ImGui::PushFont(HUDElements.sw_stats->font_small);
+        HUDElements.TextColored(HUDElements.colors.text, "GiB");
+        ImGui::PopFont();
+    }
+
+    if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_ram_temp]) {
+        ImguiNextColumnOrNewRow();
+        if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_temp_fahrenheit])
+            right_aligned_text(HUDElements.colors.text, HUDElements.ralign_width, "%i", HUDElements.convert_to_fahrenheit(mem_temp));
+        else
+            right_aligned_text(HUDElements.colors.text, HUDElements.ralign_width, "%i", mem_temp);
+        ImGui::SameLine(0, 1.0f);
+        if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_hud_compact])
+            HUDElements.TextColored(HUDElements.colors.text, "°");
+        else if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_temp_fahrenheit])
+            HUDElements.TextColored(HUDElements.colors.text, "°F");
+        else
+            HUDElements.TextColored(HUDElements.colors.text, "°C");
+    }
+#endif
+}
+
+void HudElements::procmem()
+{
+#ifdef __linux__
+    const char* unit = nullptr;
+
+    if (!HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_procmem])
+        return;
+
+    ImguiNextColumnFirstItem();
+    HUDElements.TextColored(HUDElements.colors.ram, "PMEM");
+    ImguiNextColumnOrNewRow();
+    right_aligned_text(HUDElements.colors.text, HUDElements.ralign_width, "%.1f", format_units(proc_mem_resident, unit));
+    ImGui::SameLine(0, 1.0f);
+    ImGui::PushFont(HUDElements.sw_stats->font_small);
+    HUDElements.TextColored(HUDElements.colors.text, "%s", unit);
+    ImGui::PopFont();
+
+    if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_procmem_shared]) {
+        ImguiNextColumnOrNewRow();
+        right_aligned_text(HUDElements.colors.text, HUDElements.ralign_width, "%.1f", format_units(proc_mem_shared, unit));
+        ImGui::SameLine(0,1.0f);
+        ImGui::PushFont(HUDElements.sw_stats->font_small);
+        HUDElements.TextColored(HUDElements.colors.text, "%s", unit);
+        ImGui::PopFont();
+    }
+
+    if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_procmem_virt]) {
+        ImguiNextColumnOrNewRow();
+        right_aligned_text(HUDElements.colors.text, HUDElements.ralign_width, "%.1f", format_units(proc_mem_virt, unit));
+        ImGui::SameLine(0, 1.0f);
+        ImGui::PushFont(HUDElements.sw_stats->font_small);
+        HUDElements.TextColored(HUDElements.colors.text, "%s", unit);
+        ImGui::PopFont();
+    }
+#endif
+}
+
+void HudElements::fps(){
+    if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_fps] && !HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_fps_only]){
+        ImguiNextColumnFirstItem();
+        HUDElements.TextColored(HUDElements.colors.engine, "%s", engine_name(*HUDElements.sw_stats));
+
+        ImguiNextColumnOrNewRow();
+        if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_fps_color_change]){
+            int fps = int(HUDElements.sw_stats->fps);
+            struct LOAD_DATA fps_data = {
+            HUDElements.colors.fps_value_low,
+            HUDElements.colors.fps_value_med,
+            HUDElements.colors.fps_value_high,
+            HUDElements.params->fps_value[0],
+            HUDElements.params->fps_value[1]
+            };
+            auto load_color = change_on_load_temp(fps_data, fps);
+            right_aligned_text(load_color, HUDElements.ralign_width, "%.0f", HUDElements.sw_stats->fps);
+        }
+        else {
+            right_aligned_text(HUDElements.colors.text, HUDElements.ralign_width, "%.0f", HUDElements.sw_stats->fps);
+        }
+        ImGui::SameLine(0, 1.0f);
+        // horizontal mode already shows "FPS" as the engine label
+        bool horizontal_fps_label = HUDElements.params->fps_text.empty() &&
+                                    HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_horizontal] &&
+                                    !HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_engine_short_names];
+        if(!HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_hide_fps_superscript] && !horizontal_fps_label){
+            ImGui::PushFont(HUDElements.sw_stats->font_small);
+            HUDElements.TextColored(HUDElements.colors.text, "FPS");
+            ImGui::PopFont();
+        }
+        if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_frametime]){
+            ImguiNextColumnOrNewRow();
+            right_aligned_text(HUDElements.colors.text, HUDElements.ralign_width, "%.1f", 1000 / HUDElements.sw_stats->fps);
+            ImGui::SameLine(0, 1.0f);
+            ImGui::PushFont(HUDElements.sw_stats->font_small);
+            HUDElements.TextColored(HUDElements.colors.text, "ms");
+            ImGui::PopFont();
+        }
+    } else if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_engine_version]){
+        ImguiNextColumnOrNewRow();
+        HUDElements.TextColored(HUDElements.colors.engine, "%s", HUDElements.sw_stats->engineName.c_str());
+    }
+}
+
+void HudElements::fps_only(){
+    if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_fps_only]){
+        ImguiNextColumnFirstItem();
+        auto load_color = HUDElements.colors.text;
+        if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_fps_color_change]){
+            int fps = int(HUDElements.sw_stats->fps);
+            struct LOAD_DATA fps_data = {
+            HUDElements.colors.fps_value_low,
+            HUDElements.colors.fps_value_med,
+            HUDElements.colors.fps_value_high,
+            HUDElements.params->fps_value[0],
+            HUDElements.params->fps_value[1]
+            };
+            load_color = change_on_load_temp(fps_data, fps);
+        }
+        HUDElements.TextColored(load_color, "%.0f", HUDElements.sw_stats->fps);
+    }
+}
+
+void HudElements::gpu_name(){
+    if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_gpu_name] && !HUDElements.sw_stats->gpuName.empty()){
+        ImguiNextColumnFirstItem();
+        ImGui::PushFont(HUDElements.sw_stats->font_secondary);
+        HUDElements.TextColored(HUDElements.colors.engine,
+            "%s", HUDElements.sw_stats->gpuName.c_str());
+        ImGui::PopFont();
+    }
+}
+
+void HudElements::engine_version(){
+    if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_engine_version]){
+        ImguiNextColumnFirstItem();
+        ImGui::PushFont(HUDElements.sw_stats->font_secondary);
+        if (HUDElements.is_vulkan) {
+            if ((HUDElements.sw_stats->engine == EngineTypes::DXVK || HUDElements.sw_stats->engine == EngineTypes::VKD3D)){
+                HUDElements.TextColored(HUDElements.colors.engine,
+                    "%s/%d.%d.%d", HUDElements.sw_stats->engineVersion.c_str(),
+                    HUDElements.sw_stats->version_vk.major,
+                    HUDElements.sw_stats->version_vk.minor,
+                    HUDElements.sw_stats->version_vk.patch);
+            } else {
+                HUDElements.TextColored(HUDElements.colors.engine,
+                    "%d.%d.%d",
+                    HUDElements.sw_stats->version_vk.major,
+                    HUDElements.sw_stats->version_vk.minor,
+                    HUDElements.sw_stats->version_vk.patch);
+            }
+        } else {
+            HUDElements.TextColored(HUDElements.colors.engine,
+                "%d.%d%s", HUDElements.sw_stats->version_gl.major, HUDElements.sw_stats->version_gl.minor,
+                HUDElements.sw_stats->version_gl.is_gles ? " ES" : "");
+        }
+        ImGui::PopFont();
+    }
+}
+
+void HudElements::vulkan_driver(){
+    if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_vulkan_driver] && !HUDElements.sw_stats->driverName.empty()){
+        ImguiNextColumnFirstItem();
+        ImGui::PushFont(HUDElements.sw_stats->font_secondary);
+        HUDElements.TextColored(HUDElements.colors.engine,
+            "%s", HUDElements.sw_stats->driverName.c_str());
+        ImGui::PopFont();
+    }
+}
+
+void HudElements::arch(){
+    if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_arch]){
+        ImguiNextColumnFirstItem();
+        ImGui::PushFont(HUDElements.sw_stats->font_secondary);
+        HUDElements.TextColored(HUDElements.colors.engine, "%s", "" MANGOHUD_ARCH);
+        ImGui::PopFont();
+    }
+}
+
+void HudElements::wine(){
+    if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_wine]){
+        ImguiNextColumnFirstItem();
+        if (!wineVersion.empty()){
+            ImGui::PushFont(HUDElements.sw_stats->font_secondary);
+            HUDElements.TextColored(HUDElements.colors.wine, "%s", wineVersion.c_str());
+            ImGui::PopFont();
+        }
+    }
+}
+
+static inline double TransformForward_Custom(double v, void*) {
+    if (v > 50)
+        v = 49.9;
+
+    return v;
+}
+
+static inline double TransformInverse_Custom(double v, void*) {
+   return v;
+}
+
+void HudElements::frame_timing(){
+    if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_frame_timing]){
+        ImguiNextColumnFirstItem();
+        ImGui::PushFont(HUDElements.sw_stats->font_small);
+        if (!HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_horizontal] && !HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_hud_compact]){
+            ImGui::Dummy(ImVec2(0.0f, real_font_size.y));
+            HUDElements.TextColored(HUDElements.colors.engine, "%s", "Frametime");
+            ImGui::TableSetColumnIndex(ImGui::TableGetColumnCount() - 1);
+            ImGui::Dummy(ImVec2(0.0f, real_font_size.y));
+            right_aligned_text(HUDElements.colors.text, ImGui::GetContentRegionAvail().x, "min: %.1fms, max: %.1fms", min_frametime, max_frametime);
+            ImGui::Dummy(ImVec2(0.0f, real_font_size.y / 2));
+            ImguiNextColumnFirstItem();
+        }
+        char hash[40];
+        snprintf(hash, sizeof(hash), "##%s", overlay_param_names[OVERLAY_PARAM_ENABLED_frame_timing]);
+        HUDElements.sw_stats->stat_selector = OVERLAY_PLOTS_frame_timing;
+        HUDElements.sw_stats->time_dividor = 1000000.0f; /* ns -> ms */
+        ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+        double min_time = 0.0f;
+        double max_time = 50.0f;
+        float width, height = 0;
+        if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_horizontal]){
+            width = 150;
+            height = HUDElements.params->font_size * 0.85;
+        } else {
+            width = (ImGui::GetWindowContentRegionMax().x - ImGui::GetWindowContentRegionMin().x);
+            height = max_time;
+        }
+
+        if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_dynamic_frame_timing]){
+            min_time = min_frametime;
+            max_time = max_frametime;
+        }
+        if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_frame_timing_detailed]){
+            height = 125;
+        }
+
+        if (ImGui::BeginChild("my_child_window", ImVec2(width, height), false, ImGuiWindowFlags_NoDecoration)) {
+            if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_histogram]){
+                ImGui::PlotHistogram(hash, get_time_stat, HUDElements.sw_stats,
+                                    ARRAY_SIZE(HUDElements.sw_stats->frames_stats), 0,
+                                    NULL, min_time, max_time,
+                                    ImVec2(width, height));
+            } else {
+#ifndef __linux__
+                ImGui::PlotLines(hash, get_time_stat, HUDElements.sw_stats,
+                                ARRAY_SIZE(HUDElements.sw_stats->frames_stats), 0,
+                                NULL, min_time, max_time,
+                                ImVec2(width, height));
+#else
+
+                if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_horizontal]) {
+                    ImGui::PlotLines(hash, get_time_stat, HUDElements.sw_stats,
+                    ARRAY_SIZE(HUDElements.sw_stats->frames_stats), 0,
+                    NULL, min_time, max_time,
+                    ImVec2(width, height));
+                } else {
+                    if (ImPlot::BeginPlot("My Plot", ImVec2(width, height), ImPlotFlags_CanvasOnly | ImPlotFlags_NoInputs)) {
+                        ImPlotStyle& style = ImPlot::GetStyle();
+                        style.Colors[ImPlotCol_PlotBg] = ImVec4(0.92f, 0.92f, 0.95f, 0.00f);
+                        style.Colors[ImPlotCol_AxisGrid] = ImVec4(0.0f, 0.0f, 0.0f, 1.0f);
+                        style.Colors[ImPlotCol_AxisTick] = ImVec4(0.0f, 0.0f, 0.0f, 1.0f);
+                        ImPlotAxisFlags ax_flags_x = ImPlotAxisFlags_NoDecorations;
+                        ImPlotAxisFlags ax_flags_y = ImPlotAxisFlags_NoDecorations;
+                        if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_frame_timing_detailed])
+                            ax_flags_y = ImPlotAxisFlags_Opposite | ImPlotAxisFlags_NoMenus;
+
+                        ImPlot::SetupAxes(nullptr, nullptr, ax_flags_x, ax_flags_y);
+                        ImPlot::SetupAxisScale(ImAxis_Y1, TransformForward_Custom, TransformInverse_Custom);
+                        ImPlot::SetupAxesLimits(0, 200, min_time, max_time, ImGuiCond_Always);
+                        ImPlot::SetNextLineStyle(HUDElements.colors.frametime, 1.5);
+                        ImPlot::PlotLine("frametime line", frametime_data.data(), frametime_data.size());
+                        if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_throttling_status_graph] &&
+                            gpus && gpus->active_gpu() && gpus->active_gpu()->throttling()){
+                            ImPlot::SetNextLineStyle(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), 1.5);
+                            ImPlot::PlotLine("power line", gpus->active_gpu()->throttling()->power.data(), gpus->active_gpu()->throttling()->power.size());
+                            ImPlot::SetNextLineStyle(ImVec4(1.0f, 0.0f, 0.0f, 1.0f), 1.5);
+                            ImPlot::PlotLine("thermal line", gpus->active_gpu()->throttling()->thermal.data(), gpus->active_gpu()->throttling()->thermal.size());
+                        }
+                        ImPlot::EndPlot();
+                    }
+                }
+#endif
+            }
+        }
+        ImGui::EndChild();
+#ifdef __linux__
+        if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_throttling_status_graph] &&
+            gpus && gpus->active_gpu() && gpus->active_gpu()->throttling()){
+            ImGui::Dummy(ImVec2(0.0f, real_font_size.y / 2));
+
+            if (gpus->active_gpu()->throttling()->power_throttling()) {
+                ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "%s", ICON_FK_SQUARE);
+                ImGui::SameLine();
+                ImGui::Text("Power throttling");
+            }
+
+            ImGui::Dummy(ImVec2(0.0f, real_font_size.y / 2));
+
+            if (gpus->active_gpu()->throttling()->thermal_throttling()) {
+                ImGui::TextColored(ImVec4(1.0f, 0.0f, 0.0f, 1.0f), "%s", ICON_FK_SQUARE);
+                ImGui::SameLine();
+                ImGui::Text("Thermal throttling");
+            }
+        }
+        ImGui::PopFont();
+        ImGui::PopStyleColor();
+#endif
+    }
+}
+
+void HudElements::media_player(){
+#ifdef HAVE_DBUS
+    if (!HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_media_player])
+        return;
+
+    ImguiNextColumnFirstItem();
+    uint32_t f_idx = (HUDElements.sw_stats->n_frames - 1) % ARRAY_SIZE(HUDElements.sw_stats->frames_stats);
+    uint64_t frame_timing = HUDElements.sw_stats->frames_stats[f_idx].stats[OVERLAY_PLOTS_frame_timing];
+    ImFont scaled_font = *HUDElements.sw_stats->font_text;
+    scaled_font.Scale = HUDElements.params->font_scale_media_player;
+    ImGui::PushFont(&scaled_font);
+    {
+        std::unique_lock<std::mutex> lck(main_metadata.mtx, std::try_to_lock);
+        if (lck.owns_lock())
+            render_mpris_metadata(*HUDElements.params, main_metadata, frame_timing);
+        else
+            SPDLOG_DEBUG("failed to acquire lock");
+    }
+    if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_horizontal]) {
+        ImguiNextColumnFirstItem();
+    }
+    if (!main_metadata.meta.playing) {
+        HUDElements.TextColored(HUDElements.colors.media_player, "(paused)");
+    }
+
+    ImGui::PopFont();
+#endif
+}
+
+void HudElements::resolution(){
+    if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_resolution]){
+        ImguiNextColumnFirstItem();
+        const auto res  = ImGui::GetIO().DisplaySize;
+        ImGui::PushFont(HUDElements.sw_stats->font_secondary);
+        const char * title = "Resolution";
+        HUDElements.TextColored(HUDElements.colors.engine, title);
+        ImguiNextColumnOrNewRow();
+
+        // Jump a column if title is overflowing
+        if (ImGuiTextOverflow(title))
+            ImguiNextColumnOrNewRow();
+
+        right_aligned_text(HUDElements.colors.text, HUDElements.ralign_width * 1.5f, "%.0fx%.0f", res.x, res.y);
+        ImGui::PopFont();
+    }
+}
+
+void HudElements::show_fps_limit(){
+    if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_show_fps_limit]){
+        if (fps_limiter && fps_limiter->active) {
+            ImguiNextColumnFirstItem();
+            ImGui::PushFont(HUDElements.sw_stats->font_secondary);
+            const char* method = fps_limiter->use_early ? "early" : "late";
+            HUDElements.TextColored(HUDElements.colors.engine, "%s","FPS limit");
+            ImguiNextColumnOrNewRow();
+            right_aligned_text(HUDElements.colors.text, HUDElements.ralign_width, "%s", method);
+            ImguiNextColumnOrNewRow();
+            right_aligned_text(HUDElements.colors.text, HUDElements.ralign_width, "%i", fps_limiter->current_limit());
+            ImGui::PopFont();
+        }
+    }
+}
+
+void HudElements::custom_text_center(){
+    if (HUDElements.place >= 0 &&
+        static_cast<size_t>(HUDElements.place) < HUDElements.ordered_functions.size()) {
+
+        if (!HUDElements.sw_stats || !HUDElements.sw_stats->font_secondary) {
+            return;
+        }
+
+        ImguiNextColumnFirstItem();
+        ImGui::PushFont(HUDElements.sw_stats->font_secondary);
+
+        const std::string& value = HUDElements.ordered_functions[HUDElements.place].value;
+
+        center_text(value);
+        HUDElements.TextColored(HUDElements.colors.text, "%s", value.c_str());
+
+        ImGui::NewLine();
+        ImGui::PopFont();
+    }
+}
+
+void HudElements::custom_text(){
+    ImguiNextColumnFirstItem();
+    ImGui::PushFont(HUDElements.sw_stats->font_secondary);
+    const char* value;
+    if (size_t(HUDElements.place) < HUDElements.ordered_functions.size())
+        value = HUDElements.ordered_functions[HUDElements.place].value.c_str();
+    else {
+        ImGui::PopFont();
+        return;
+    }
+    HUDElements.TextColored(HUDElements.colors.text, "%s",value);
+    ImGui::PopFont();
+}
+
+void HudElements::_exec(){
+    //const std::string& value = HUDElements.ordered_functions[HUDElements.place].second;
+    ImGui::PushFont(HUDElements.sw_stats->font_secondary);
+    ImguiNextColumnFirstItem();
+    for (auto& item : HUDElements.exec_list){
+        if (item.pos == HUDElements.place){
+            if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_horizontal])
+                HUDElements.TextColored(HUDElements.colors.text, "%s",item.ret.c_str());
+            else
+                right_aligned_text(HUDElements.colors.text,HUDElements.ralign_width, "%s", item.ret.c_str());
+        }
+    }
+    ImGui::PopFont();
+}
+
+void HudElements::gamemode(){
+    if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_gamemode]){
+        ImguiNextColumnFirstItem();
+        ImGui::PushFont(HUDElements.sw_stats->font_secondary);
+        HUDElements.TextColored(HUDElements.colors.engine, "%s", "GAMEMODE");
+        ImguiNextColumnOrNewRow();
+        right_aligned_text(HUDElements.colors.text, HUDElements.ralign_width, "%s", HUDElements.gamemode_bol ? "ON" : "OFF");
+        ImGui::PopFont();
+    }
+}
+
+void HudElements::vkbasalt(){
+    if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_vkbasalt]){
+        ImguiNextColumnFirstItem();
+        ImGui::PushFont(HUDElements.sw_stats->font_secondary);
+        HUDElements.TextColored(HUDElements.colors.engine, "%s", "VKBASALT");
+        ImguiNextColumnOrNewRow();
+        right_aligned_text(HUDElements.colors.text, HUDElements.ralign_width, "%s", HUDElements.vkbasalt_bol ? "ON" : "OFF");
+        ImGui::PopFont();
+    }
+}
+
+void HudElements::battery(){
+#ifdef __linux__
+    if (Battery_Stats.batt_count > 0) {
+        if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_battery]) {
+            ImguiNextColumnFirstItem();
+            if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_hud_compact])
+                HUDElements.TextColored(HUDElements.colors.battery, "BAT");
+            else
+                HUDElements.TextColored(HUDElements.colors.battery, "BATT");
+            ImguiNextColumnOrNewRow();
+            if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_battery_icon]) {
+                switch(int(Battery_Stats.current_percent)){
+                    case 0 ... 33:
+                        right_aligned_text(HUDElements.colors.text, HUDElements.ralign_width, "%s", ICON_FK_BATTERY_QUARTER);
+                        break;
+                    case 34 ... 66:
+                        right_aligned_text(HUDElements.colors.text, HUDElements.ralign_width, "%s", ICON_FK_BATTERY_HALF);
+                        break;
+                    case 67 ... 97:
+                        right_aligned_text(HUDElements.colors.text, HUDElements.ralign_width, "%s", ICON_FK_BATTERY_THREE_QUARTERS);
+                        break;
+                    case 98 ... 100:
+                        right_aligned_text(HUDElements.colors.text, HUDElements.ralign_width, "%s", ICON_FK_BATTERY_FULL);
+                        break;
+                }
+            }
+            else {
+                right_aligned_text(HUDElements.colors.text, HUDElements.ralign_width, "%.0f", Battery_Stats.current_percent);
+                ImGui::SameLine(0,1.0f);
+                HUDElements.TextColored(HUDElements.colors.text, "%%");
+            }
+            if (Battery_Stats.current_watt != 0) {
+                if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_battery_watt]){
+                    ImguiNextColumnOrNewRow();
+                    if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_hud_compact] && Battery_Stats.current_watt >= 10.0f)
+                        right_aligned_text(HUDElements.colors.text, HUDElements.ralign_width, "%.0f", Battery_Stats.current_watt);
+                    else
+                        right_aligned_text(HUDElements.colors.text, HUDElements.ralign_width, "%.1f", Battery_Stats.current_watt);
+                    ImGui::SameLine(0,1.0f);
+                    ImGui::PushFont(HUDElements.sw_stats->font_small);
+                    HUDElements.TextColored(HUDElements.colors.text, "W");
+                    ImGui::PopFont();
+                }
+                if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_battery_time]) {
+                    float hours;
+                    float minutes;
+                    minutes = std::modf(Battery_Stats.remaining_time, &hours);
+                    minutes *= 60;
+                    char time_buffer[32];
+                    snprintf(time_buffer, sizeof(time_buffer), "%02d:%02d", static_cast<int>(hours), static_cast<int>(minutes));
+
+                    if (!HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_horizontal] && !HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_hud_compact]){
+                        ImGui::TableNextRow();
+                        ImGui::NextColumn();
+                        ImGui::PushFont(HUDElements.sw_stats->font_small);
+                        ImGuiTableSetColumnIndex(0);
+                        HUDElements.TextColored(HUDElements.colors.text, "%s", "Remaining Time");
+                        ImGui::PopFont();
+                        ImGuiTableSetColumnIndex(2);
+                    } else {
+                        if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_horizontal])
+                            ImguiNextColumnOrNewRow();
+
+                        ImguiNextColumnOrNewRow();
+                    }
+                    if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_hud_compact])
+                        ImGuiTableSetColumnIndex(0);
+
+                    right_aligned_text(HUDElements.colors.text, HUDElements.ralign_width, "%s", time_buffer);
+                }
+            } else {
+                ImguiNextColumnOrNewRow();
+                right_aligned_text(HUDElements.colors.text, HUDElements.ralign_width, "%s", ICON_FK_PLUG);
+            }
+        }
+
+    }
+#endif
+}
+
+void HudElements::gamescope_fsr(){
+    if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_fsr] && HUDElements.g_fsrUpscale >= 0) {
+        ImguiNextColumnFirstItem();
+        string FSR_TEXT;
+        ImVec4 FSR_COLOR;
+        if (HUDElements.g_fsrUpscale){
+            FSR_TEXT = "ON";
+            FSR_COLOR = HUDElements.colors.fps_value_high;
+        } else {
+            FSR_TEXT = "OFF";
+            FSR_COLOR = HUDElements.colors.fps_value_low;
+        }
+
+        HUDElements.TextColored(HUDElements.colors.engine, "%s", "FSR");
+        ImguiNextColumnOrNewRow();
+        right_aligned_text(FSR_COLOR, HUDElements.ralign_width, "%s", FSR_TEXT.c_str());
+        if (HUDElements.g_fsrUpscale){
+            if (!HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_hide_fsr_sharpness]) {
+                ImguiNextColumnOrNewRow();
+                right_aligned_text(HUDElements.colors.text, HUDElements.ralign_width, "%i", HUDElements.g_fsrSharpness);
+                ImGui::SameLine(0,1.0f);
+                ImGui::PushFont(HUDElements.sw_stats->font_small);
+                HUDElements.TextColored(HUDElements.colors.text, "Sharp");
+                ImGui::PopFont();
+            }
+        }
+    }
+}
+
+void HudElements::gamescope_frame_timing(){
+    if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_debug]) {
+        static std::vector<float>::iterator min, max;
+        static double min_time = 0.0f;
+        static double max_time = 50.0f;
+        if (HUDElements.gamescope_debug_app.size() > 0 && HUDElements.gamescope_debug_app.back() > -1){
+            auto min = std::min_element(HUDElements.gamescope_debug_app.begin(),
+                                        HUDElements.gamescope_debug_app.end());
+            auto max = std::max_element(HUDElements.gamescope_debug_app.begin(),
+                                        HUDElements.gamescope_debug_app.end());
+
+            ImGui::PushFont(HUDElements.sw_stats->font_small);
+            ImGui::Dummy(ImVec2(0.0f, real_font_size.y));
+            HUDElements.TextColored(HUDElements.colors.engine, "%s", "App");
+            ImGui::TableSetColumnIndex(ImGui::TableGetColumnCount() - 1);
+            right_aligned_text(HUDElements.colors.text, HUDElements.ralign_width * 1.3, "min: %.1fms, max: %.1fms", min[0], max[0]);
+            ImGui::Dummy(ImVec2(0.0f, real_font_size.y / 2));
+            ImguiNextColumnFirstItem();
+            ImGui::PopFont();
+            char hash[40];
+            snprintf(hash, sizeof(hash), "##%s", overlay_param_names[OVERLAY_PARAM_ENABLED_frame_timing]);
+            HUDElements.sw_stats->stat_selector = OVERLAY_PLOTS_frame_timing;
+            HUDElements.sw_stats->time_dividor = 1000000.0f; /* ns -> ms */
+
+            ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+            if (ImGui::BeginChild("gamescope_app_window", ImVec2((ImGui::GetWindowContentRegionMax().x - ImGui::GetWindowContentRegionMin().x), 50))) {
+                ImGui::PlotLines("gamescope debug lines", HUDElements.gamescope_debug_app.data(),
+                        HUDElements.gamescope_debug_app.size(), 0,
+                        NULL, min_time, max_time,
+                            ImVec2((ImGui::GetWindowContentRegionMax().x - ImGui::GetWindowContentRegionMin().x), 50));
+            }
+            ImGui::PopStyleColor();
+            ImGui::EndChild();
+        }
+        if (HUDElements.gamescope_debug_latency.size() > 0 && HUDElements.gamescope_debug_latency.back() > -1){
+            ImguiNextColumnOrNewRow();
+            ImGui::Dummy(ImVec2(0.0f, real_font_size.y));
+            ImGui::PushFont(HUDElements.sw_stats->font_small);
+            HUDElements.TextColored(HUDElements.colors.engine, "%s", "Latency");
+            ImGui::TableNextRow();
+            ImGui::Dummy(ImVec2(0.0f, real_font_size.y));
+            min = std::min_element(HUDElements.gamescope_debug_latency.begin(),
+                                   HUDElements.gamescope_debug_latency.end());
+            max = std::max_element(HUDElements.gamescope_debug_latency.begin(),
+                                   HUDElements.gamescope_debug_latency.end());
+            right_aligned_text(HUDElements.colors.text, HUDElements.ralign_width * 1.3, "min: %.1fms, max: %.1fms", min[0], max[0]);
+            ImGui::PopFont();
+            ImguiNextColumnFirstItem();
+            ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+            ImGui::PushStyleColor(ImGuiCol_PlotLines, ImVec4(0,0,1,1));
+            if (ImGui::BeginChild("gamescope_latency_window", ImVec2((ImGui::GetWindowContentRegionMax().x - ImGui::GetWindowContentRegionMin().x), 50))) {
+                ImGui::PlotLines("gamescope debug latency lines", HUDElements.gamescope_debug_latency.data(),
+                        HUDElements.gamescope_debug_latency.size(), 0,
+                        NULL, min_time, max_time,
+                        ImVec2((ImGui::GetWindowContentRegionMax().x - ImGui::GetWindowContentRegionMin().x), 50));
+            }
+            ImGui::PopStyleColor(2);
+            ImGui::EndChild();
+        }
+    }
+}
+
+void HudElements::device_battery()
+{
+#ifdef __linux__
+    std::unique_lock<std::mutex> l(device_lock);
+    if (!HUDElements.params->device_battery.empty()) {
+        if (device_found) {
+            for (int i = 0; i < device_count; i++) {
+                std::string battery = device_data[i].battery;
+                std::string name = device_data[i].name;
+                std::string battery_percent = device_data[i].battery_percent;
+                bool report_percent = device_data[i].report_percent;
+                bool charging = device_data[i].is_charging;
+
+                ImguiNextColumnFirstItem();
+                ImGui::PushFont(HUDElements.sw_stats->font_secondary);
+                HUDElements.TextColored(HUDElements.colors.engine, "%s", name.c_str());
+                ImguiNextColumnOrNewRow();
+                if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_device_battery_icon]) {
+                    if (charging)
+                        right_aligned_text(HUDElements.colors.text, HUDElements.ralign_width, "%s", ICON_FK_USB);
+                    else {
+                        if (battery == "Full")
+                            right_aligned_text(HUDElements.colors.text, HUDElements.ralign_width, "%s", ICON_FK_BATTERY_FULL);
+                        else if (battery == "High")
+                            right_aligned_text(HUDElements.colors.text, HUDElements.ralign_width, "%s", ICON_FK_BATTERY_THREE_QUARTERS);
+                        else if (battery == "Normal")
+                            right_aligned_text(HUDElements.colors.text, HUDElements.ralign_width, "%s", ICON_FK_BATTERY_HALF);
+                        else if (battery == "Low")
+                            right_aligned_text(HUDElements.colors.text, HUDElements.ralign_width, "%s", ICON_FK_BATTERY_QUARTER);
+                        else if (battery == "Unknown")
+                            right_aligned_text(HUDElements.colors.text, HUDElements.ralign_width, "%s", ICON_FK_USB);
+                    }
+                }
+                else {
+                    if (charging)
+                        right_aligned_text(HUDElements.colors.text, HUDElements.ralign_width, "%s", ICON_FK_USB);
+                    else if (report_percent) {
+                        right_aligned_text(HUDElements.colors.text,HUDElements.ralign_width, "%s", battery_percent.c_str());
+                        ImGui::SameLine(0,1.0f);
+                        HUDElements.TextColored(HUDElements.colors.text, "%%");
+                    }
+                    else {
+                        if (battery == "Unknown")
+                            right_aligned_text(HUDElements.colors.text, HUDElements.ralign_width, "%s", ICON_FK_USB);
+                        else
+                            right_aligned_text(HUDElements.colors.text,HUDElements.ralign_width, "%s", battery.c_str());
+                    }
+                }
+                if (device_count > 1 && !HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_horizontal])
+                    ImGui::TableNextRow();
+                ImGui::PopFont();
+            }
+        }
+    }
+#endif
+}
+
+void HudElements::frame_count(){
+    if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_frame_count]){
+        ImguiNextColumnFirstItem();
+        ImGui::PushFont(HUDElements.sw_stats->font_secondary);
+        HUDElements.TextColored(HUDElements.colors.engine, "Frame Count");
+        ImguiNextColumnOrNewRow();
+        right_aligned_text(HUDElements.colors.text, HUDElements.ralign_width, "%" PRIu64, HUDElements.sw_stats->n_frames);
+        ImGui::PopFont();
+    }
+}
+
+void HudElements::fan(){
+    if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_fan] && fan_speed != -1) {
+        ImguiNextColumnFirstItem();
+        HUDElements.TextColored(HUDElements.colors.engine, "%s", "FAN");
+        ImguiNextColumnOrNewRow();
+        right_aligned_text(HUDElements.colors.text,HUDElements.ralign_width, "%i", fan_speed);
+        ImGui::SameLine(0, 1.0f);
+        ImGui::PushFont(HUDElements.sw_stats->font_small);
+        HUDElements.TextColored(HUDElements.colors.text, "RPM");
+        ImGui::PopFont();
+    }
+}
+
+void HudElements::throttling_status(){
+    if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_throttling_status] && gpus){
+        auto gpu = gpus->active_gpu();
+        if (!gpu)
+            return;
+
+        if ((gpu->metrics.is_power_throttled || gpu->metrics.is_current_throttled || gpu->metrics.is_temp_throttled || gpu->metrics.is_other_throttled)){
+            ImguiNextColumnFirstItem();
+            HUDElements.TextColored(HUDElements.colors.engine, "%s", "Throttling");
+            ImguiNextColumnOrNewRow();
+            ImguiNextColumnOrNewRow();
+            if (gpu->metrics.is_power_throttled)
+                right_aligned_text(HUDElements.colors.text, HUDElements.ralign_width, "Power");
+            if (gpu->metrics.is_current_throttled)
+                right_aligned_text(HUDElements.colors.text, HUDElements.ralign_width, "Current");
+            if (gpu->metrics.is_temp_throttled)
+                right_aligned_text(HUDElements.colors.text, HUDElements.ralign_width, "Temp");
+            if (gpu->metrics.is_other_throttled)
+                right_aligned_text(HUDElements.colors.text, HUDElements.ralign_width, "Other");
+        }
+    }
+}
+
+void HudElements::duration(){
+    ImGui::PushFont(HUDElements.sw_stats->font_secondary);
+    ImguiNextColumnFirstItem();
+    HUDElements.TextColored(HUDElements.colors.engine, "%s", "Duration");
+    ImguiNextColumnOrNewRow();
+    std::chrono::steady_clock::time_point currentTime = std::chrono::steady_clock::now();
+    std::chrono::duration<double> elapsedTime = currentTime - HUDElements.overlay_start;
+    int hours = std::chrono::duration_cast<std::chrono::hours>(elapsedTime).count();
+    int minutes = std::chrono::duration_cast<std::chrono::minutes>(elapsedTime).count() % 60;
+    int seconds = std::chrono::duration_cast<std::chrono::seconds>(elapsedTime).count() % 60;
+    if (hours > 0)
+        right_aligned_text(HUDElements.colors.text, HUDElements.ralign_width, "%02d:%02d:%02d", hours, minutes, seconds);
+    else if (minutes > 0)
+        right_aligned_text(HUDElements.colors.text, HUDElements.ralign_width, "%02d:%02d", minutes, seconds);
+    else
+        right_aligned_text(HUDElements.colors.text, HUDElements.ralign_width, "%02d", seconds);
+    ImGui::PopFont();
+}
+
+void HudElements::graphs(){
+    ImguiNextColumnFirstItem();
+    ImGui::Dummy(ImVec2(0.0f, real_font_size.y));
+    const std::string& value = HUDElements.ordered_functions[HUDElements.place].value;
+    assert(kMaxGraphEntries >= graph_data.size());
+    std::vector<float> arr(kMaxGraphEntries - graph_data.size());
+
+    ImGui::PushFont(HUDElements.sw_stats->font_small);
+    if (value == "cpu_load"){
+        for (auto& it : graph_data){
+            arr.push_back(float(it.cpu_load));
+        }
+        HUDElements.max = 100;
+        HUDElements.min = 0;
+        HUDElements.TextColored(HUDElements.colors.engine, "%s", "CPU Load");
+    }
+
+    if (value == "gpu_load"){
+        for (auto& it : graph_data){
+            arr.push_back(float(it.gpu_load));
+        }
+        HUDElements.max = 100;
+        HUDElements.min = 0;
+        HUDElements.TextColored(HUDElements.colors.engine, "%s", "GPU Load");
+    }
+
+    if (value == "cpu_temp"){
+        for (auto& it : graph_data){
+            arr.push_back(float(it.cpu_temp));
+        }
+        if (int(arr.back()) > HUDElements.cpu_temp_max)
+            HUDElements.cpu_temp_max = arr.back();
+
+        HUDElements.max = HUDElements.cpu_temp_max;
+        HUDElements.min = 0;
+        HUDElements.TextColored(HUDElements.colors.engine, "%s", "CPU Temp");
+    }
+
+    if (value == "gpu_temp"){
+        for (auto& it : graph_data){
+            arr.push_back(float(it.gpu_temp));
+        }
+        if (int(arr.back()) > HUDElements.gpu_temp_max)
+            HUDElements.gpu_temp_max = arr.back();
+
+        HUDElements.max = HUDElements.gpu_temp_max;
+        HUDElements.min = 0;
+        HUDElements.TextColored(HUDElements.colors.engine, "%s", "GPU Temp");
+    }
+
+    if (value == "gpu_core_clock"){
+        for (auto& it : graph_data){
+            arr.push_back(float(it.gpu_core_clock));
+        }
+        if (int(arr.back()) > HUDElements.gpu_core_max)
+            HUDElements.gpu_core_max = arr.back();
+
+        HUDElements.max = HUDElements.gpu_core_max;
+        HUDElements.min = 0;
+        HUDElements.TextColored(HUDElements.colors.engine, "%s", "GPU Core Clock");
+    }
+
+    if (value == "gpu_mem_clock"){
+        for (auto& it : graph_data){
+            arr.push_back(float(it.gpu_mem_clock));
+        }
+        if (int(arr.back()) > HUDElements.gpu_mem_max)
+            HUDElements.gpu_mem_max = arr.back();
+
+        HUDElements.max = HUDElements.gpu_mem_max;
+        HUDElements.min = 0;
+        HUDElements.TextColored(HUDElements.colors.engine, "%s", "GPU Mem Clock");
+    }
+
+    if (value == "vram" && gpus){
+        for (auto& it : graph_data){
+            arr.push_back(float(it.gpu_vram_used));
+        }
+
+        auto gpu = gpus->active_gpu();
+        if (!gpu)
+            return;
+
+        HUDElements.max = gpu->metrics.memoryTotal;
+        HUDElements.min = 0;
+        HUDElements.TextColored(HUDElements.colors.engine, "%s", "VRAM");
+    }
+#ifdef __linux__
+    if (value == "ram"){
+
+        for (auto& it : graph_data){
+            arr.push_back(float(it.ram_used));
+        }
+
+        HUDElements.max = memmax;
+        HUDElements.min = 0;
+        HUDElements.TextColored(HUDElements.colors.engine, "%s", "RAM");
+    }
+#endif
+    ImGui::PopFont();
+    ImGui::Dummy(ImVec2(0.0f,5.0f));
+    ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+    const std::string graph_label = "##graph_" + value;
+    if (!HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_histogram]){
+        ImGui::PlotLines(graph_label.c_str(), arr.data(),
+                arr.size(), 0,
+                NULL, HUDElements.min, HUDElements.max,
+                ImVec2((ImGui::GetWindowContentRegionMax().x - ImGui::GetWindowContentRegionMin().x), 50));
+    } else {
+        ImGui::PlotHistogram(graph_label.c_str(), arr.data(),
+            arr.size(), 0,
+            NULL, HUDElements.min, HUDElements.max,
+            ImVec2((ImGui::GetWindowContentRegionMax().x - ImGui::GetWindowContentRegionMin().x), 50));
+    }
+    ImGui::Dummy(ImVec2(0.0f,5.0f));
+    ImGui::PopStyleColor(1);
+}
+
+void HudElements::exec_name(){
+    if (HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_exec_name]){
+        ImGui::PushFont(HUDElements.sw_stats->font_secondary);
+        ImguiNextColumnFirstItem();
+        HUDElements.TextColored(HUDElements.colors.engine, "%s", "Exe name");
+        ImguiNextColumnOrNewRow();
+        ImVec2 text_size = ImGui::CalcTextSize(global_proc_name.c_str());
+        right_aligned_text(HUDElements.colors.text, text_size.x, global_proc_name.c_str());
+        ImGui::PopFont();
+    }
+}
+
+void HudElements::fps_metrics(){
+    if (!fpsmetrics)
+        return;
+
+    for (auto& metric : fpsmetrics->copy_metrics()){
+        if (!HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_horizontal])
+            ImGui::TableNextRow();
+
+        ImguiNextColumnFirstItem();
+        HUDElements.TextColored(HUDElements.colors.engine, "%s", metric.display_name.c_str());
+        ImguiNextColumnOrNewRow();
+        right_aligned_text(HUDElements.colors.text, HUDElements.ralign_width, "%.0f", metric.value);
+        ImGui::SameLine(0, 1.0f);
+        if(!HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_hide_fps_superscript]){
+            ImGui::PushFont(HUDElements.sw_stats->font_small);
+            HUDElements.TextColored(HUDElements.colors.text, "FPS");
+            ImGui::PopFont();
+        }
+        ImguiNextColumnOrNewRow();
+    }
+}
+
+void HudElements::hdr() {
+    if (HUDElements.hdr_status > 0) {
+        ImguiNextColumnFirstItem();
+        HUDElements.TextColored(HUDElements.colors.engine, "%s", "HDR");
+        ImguiNextColumnOrNewRow();
+        right_aligned_text(HUDElements.colors.fps_value_high, HUDElements.ralign_width, "ON");
+    }
+}
+
+void HudElements::refresh_rate() {
+    if (HUDElements.refresh > 0) {
+        ImGui::PushFont(HUDElements.sw_stats->font_secondary);
+        ImguiNextColumnFirstItem();
+        HUDElements.TextColored(HUDElements.colors.engine, "%s", "Display Hz");
+        ImguiNextColumnOrNewRow();
+        right_aligned_text(HUDElements.colors.text, HUDElements.ralign_width, "%i", HUDElements.refresh);
+        ImGui::PopFont();
+    }
+}
+
+void HudElements::winesync() {
+    static std::unique_ptr<WineSync> winesync_ptr = nullptr;
+    if (!winesync_ptr)
+        winesync_ptr = std::make_unique<WineSync>();
+
+    if (winesync_ptr->valid()) {
+        winesync_ptr->set_pid(HUDElements.g_gamescopePid);
+        ImGui::PushFont(HUDElements.sw_stats->font_secondary);
+        ImguiNextColumnFirstItem();
+        HUDElements.TextColored(HUDElements.colors.engine, "%s", "WSYNC");
+        ImguiNextColumnOrNewRow();
+        right_aligned_text(HUDElements.colors.text, HUDElements.ralign_width, "%s", winesync_ptr->get_method());
+        ImGui::PopFont();
+    }
+}
+
+void HudElements::present_mode() {
+    ImguiNextColumnFirstItem();
+    ImGui::PushFont(HUDElements.sw_stats->font_secondary);
+    const char* title;
+
+    if (HUDElements.is_vulkan)
+        title = "Present Mode";
+    else
+        title = "VSYNC";
+
+    HUDElements.TextColored(HUDElements.colors.engine, "%s", title);
+    ImguiNextColumnOrNewRow();
+
+    // Jump a column if title is overflowing
+    if (ImGuiTextOverflow(title))
+        ImguiNextColumnOrNewRow();
+
+
+    right_aligned_text(HUDElements.colors.text, HUDElements.ralign_width * 2.0f, "%s\n", HUDElements.get_present_mode().c_str());
+
+    ImGui::PopFont();
+}
+
+void HudElements::network() {
+#ifdef __linux__
+    if (HUDElements.net && HUDElements.net->should_reset)
+        HUDElements.net.reset(new Net);
+
+    if (!HUDElements.net)
+        HUDElements.net = std::make_unique<Net>();
+
+    for (auto& iface : HUDElements.net->interfaces){
+        ImguiNextColumnFirstItem();
+        HUDElements.TextColored(HUDElements.colors.network, "%.8s", iface.name.c_str());
+        ImguiNextColumnOrNewRow();
+        right_aligned_text(HUDElements.colors.text, HUDElements.ralign_width, "%.0f", iface.txBps / 1000.f);
+        ImGui::SameLine(0,1.0f);
+        ImGui::PushFont(HUDElements.sw_stats->font_small);
+        HUDElements.TextColored(HUDElements.colors.text, "KB/s %s", ICON_FK_ARROW_UP);
+        ImGui::PopFont();
+        ImguiNextColumnOrNewRow();
+        right_aligned_text(HUDElements.colors.text, HUDElements.ralign_width, "%.0f", iface.rxBps / 1000.f);
+        ImGui::SameLine(0,1.0f);
+        ImGui::PushFont(HUDElements.sw_stats->font_small);
+        HUDElements.TextColored(HUDElements.colors.text, "KB/s %s", ICON_FK_ARROW_DOWN);
+        ImGui::PopFont();
+    }
+#endif
+}
+
+void HudElements::_display_session() {
+    if (not HUDElements.params->enabled[OVERLAY_PARAM_ENABLED_display_server])
+        return;
+
+    ImGui::PushFont(HUDElements.sw_stats->font_secondary);
+    ImguiNextColumnFirstItem();
+
+    const char* title = "Display Server";
+    HUDElements.TextColored(HUDElements.colors.engine, "%s", title);
+    ImguiNextColumnOrNewRow();
+
+    // Jump a column if title is overflowing
+    if (ImGuiTextOverflow(title))
+        ImguiNextColumnOrNewRow();
+
+    static std::map<display_servers, std::string> servers {
+        {WAYLAND, {"WAYLAND"}},
+        {XWAYLAND, {"XWAYLAND"}},
+        {XORG, {"XORG"}}
+    };
+    right_aligned_text(HUDElements.colors.text, HUDElements.ralign_width * 1.5f, "%s", servers[HUDElements.display_server].c_str());
+    ImGui::PopFont();
+}
+
+void HudElements::fex_stats()
+{
+#ifdef HAVE_FEX
+    if (!HUDElements.params->fex_stats.enabled) {
+        return;
+    }
+
+    ImGui::PushFont(HUDElements.sw_stats->font_small);
+
+    if (HUDElements.params->fex_stats.status) {
+        ImguiNextColumnFirstItem();
+        HUDElements.TextColored(HUDElements.colors.engine, "%s", "FEX");
+        ImguiNextColumnOrNewRow();
+        ImGui::Dummy(ImVec2(0.0f, real_font_size.y));
+        ImguiNextColumnOrNewRow();
+        right_aligned_text(HUDElements.colors.text, HUDElements.ralign_width, "%s", fex::fex_status);
+    }
+
+    if (!fex::is_fex_pid_found()) {
+        ImGui::PopFont();
+        return;
+    }
+
+    if (HUDElements.params->fex_stats.app_type) {
+        ImguiNextColumnFirstItem();
+        HUDElements.TextColored(HUDElements.colors.engine, "%s", "Type");
+        ImguiNextColumnOrNewRow();
+        ImGui::Dummy(ImVec2(0.0f, real_font_size.y));
+        ImguiNextColumnOrNewRow();
+        right_aligned_text(HUDElements.colors.text, HUDElements.ralign_width, "%s", fex::get_fex_app_type());
+    }
+
+    if (HUDElements.params->fex_stats.sigbus_counts) {
+        ImguiNextColumnFirstItem();
+        HUDElements.TextColored(HUDElements.colors.engine, "%s", "SIGBUS");
+        ImguiNextColumnOrNewRow();
+        ImGui::Dummy(ImVec2(0.0f, real_font_size.y));
+        ImguiNextColumnOrNewRow();
+        right_aligned_text(HUDElements.colors.text, HUDElements.ralign_width, "%" PRIu64 " - %.0f avg/s", fex::sigbus_counts.Count(), fex::sigbus_counts.Avg());
+    }
+
+    if (HUDElements.params->fex_stats.smc_counts) {
+        ImguiNextColumnFirstItem();
+        HUDElements.TextColored(HUDElements.colors.engine, "%s", "SMC");
+        ImguiNextColumnOrNewRow();
+        ImGui::Dummy(ImVec2(0.0f, real_font_size.y));
+        ImguiNextColumnOrNewRow();
+        right_aligned_text(HUDElements.colors.text, HUDElements.ralign_width, "%" PRIu64 " - %.0f avg/s", fex::smc_counts.Count(), fex::smc_counts.Avg());
+    }
+
+    if (HUDElements.params->fex_stats.softfloat_counts) {
+        ImguiNextColumnFirstItem();
+        HUDElements.TextColored(HUDElements.colors.engine, "%s", "Softfloat");
+        ImguiNextColumnOrNewRow();
+        ImGui::Dummy(ImVec2(0.0f, real_font_size.y));
+        ImguiNextColumnOrNewRow();
+        right_aligned_text(HUDElements.colors.text, HUDElements.ralign_width, "%" PRIu64 " - %.0f avg/s", fex::softfloat_counts.Count(), fex::softfloat_counts.Avg());
+    }
+
+    ImGui::PopFont();
+
+    ImguiNextColumnFirstItem();
+    ImGui::Dummy(ImVec2(0.0f, real_font_size.y));
+
+    if (HUDElements.params->fex_stats.hot_threads) {
+        // Draw hot threads
+        bool Warning = false;
+        ImVec4 WarningColor;
+
+        for (auto it : fex::fex_max_thread_loads){
+            if (it >= 75.0) {
+                Warning = true;
+                WarningColor = ImVec4(1.0f, 0.0f, 0.0f, 1.0f);
+            }
+            else if (it >= 50.0) {
+                Warning = true;
+                WarningColor = ImVec4(1.0f, 1.0f, 0.0f, 1.0f);
+            }
+        }
+
+        ImGui::PushFont(HUDElements.sw_stats->font_small);
+        HUDElements.TextColored(HUDElements.colors.engine, "%s", "FEX JIT top loaded threads");
+        ImGui::PopFont();
+
+        ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+        if (Warning) {
+            ImGui::PushStyleColor(ImGuiCol_PlotHistogram, WarningColor);
+        }
+
+        ImGui::PlotHistogram("##fex_hot_threads", fex::fex_max_thread_loads.data(),
+            fex::fex_max_thread_loads.size(), 0,
+            NULL, 0, 100,
+            ImVec2((ImGui::GetWindowContentRegionMax().x - ImGui::GetWindowContentRegionMin().x), 50));
+        ImGui::PopStyleColor(1 + (Warning ? 1 : 0));
+    }
+
+    if (HUDElements.params->fex_stats.jit_load) {
+        ImGui::PushFont(HUDElements.sw_stats->font_small);
+        HUDElements.TextColored(HUDElements.colors.engine, "%s", "FEX JIT Load");
+        ImGui::PopFont();
+
+        ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+
+        ImGui::PlotLines("##fex_jit_load", fex::fex_load_data.data(),
+            fex::fex_load_data.size(), 0,
+            NULL, 0, 100,
+            ImVec2((ImGui::GetWindowContentRegionMax().x - ImGui::GetWindowContentRegionMin().x), 50));
+        ImGui::PopStyleColor(1);
+    }
+#endif //HAVE_FEX
+}
+
+void HudElements::ftrace() {
+#ifdef HAVE_FTRACE
+    if (!HUDElements.params->ftrace.enabled || !FTrace::object)
+        return;
+
+    float width = (ImGui::GetWindowContentRegionMax().x - ImGui::GetWindowContentRegionMin().x);
+    float height = 100;
+
+    for (auto& tp : FTrace::object->tracepoints()) {
+        switch (tp->type) {
+        case FTrace::TracepointType::Histogram:
+        case FTrace::TracepointType::LineGraph:
+        {
+            char hash[40];
+            snprintf(hash, sizeof(hash), "##%s", tp->name.c_str());
+
+            ImGui::TableNextRow();
+            ImguiNextColumnFirstItem();
+            ImGui::PushFont(HUDElements.sw_stats->font_small);
+            ImGui::Dummy(ImVec2(0.0f, real_font_size.y));
+            HUDElements.TextColored(HUDElements.colors.text, "ftrace %s: %s",
+                                    tp->type == FTrace::TracepointType::Histogram ? "histogram" : "line graph",
+                                    tp->name.c_str());
+            ImGui::Dummy(ImVec2(0.0f, real_font_size.y / 2));
+            if (tp->type == FTrace::TracepointType::LineGraph) {
+               HUDElements.TextColored(HUDElements.colors.text, "    parameter: %s", tp->field_name.c_str());
+               ImGui::Dummy(ImVec2(0.0f, real_font_size.y / 2));
+            }
+            ImGui::PopFont();
+            if (ImGui::BeginChild(tp->name.c_str(), ImVec2(width, height), false, ImGuiWindowFlags_NoDecoration)) {
+                if (tp->type == FTrace::TracepointType::Histogram) {
+                    ImGui::PlotHistogram(hash, FTrace::FTrace::get_plot_values, tp.get(), FTrace::Tracepoint::PLOT_DATA_CAPACITY, 0,
+                                         NULL, tp->data.plot.range.min, tp->data.plot.range.max, ImVec2(width, height));
+                } else {
+                    ImGui::PlotLines(hash, FTrace::FTrace::get_plot_values, tp.get(), FTrace::Tracepoint::PLOT_DATA_CAPACITY, 0,
+                                         NULL, tp->data.plot.range.min, tp->data.plot.range.max, ImVec2(width, height));
+                }
+            }
+            ImGui::EndChild();
+            break;
+        }
+        case FTrace::TracepointType::Label:
+        {
+            ImGui::TableNextRow();
+            ImguiNextColumnFirstItem();
+            ImGui::PushFont(HUDElements.sw_stats->font_small);
+            ImGui::Dummy(ImVec2(0.0f, real_font_size.y));
+            HUDElements.TextColored(HUDElements.colors.text, "ftrace label: %s:", tp->name.c_str());
+            ImGui::Dummy(ImVec2(0.0f, real_font_size.y / 2));
+            HUDElements.TextColored(HUDElements.colors.text, "    %s=%s", tp->field_name.c_str(), tp->data.field_value.c_str());
+            ImGui::Dummy(ImVec2(0.0f, real_font_size.y / 2));
+            ImGui::PopFont();
+            break;
+        }
+        default:
+            UNREACHABLE("invalid tracepoint type");
+        }
+    }
+#endif // HAVE_FTRACE
+}
+
+void HudElements::sort_elements(const std::pair<std::string, std::string>& option) {
+    const auto& param = option.first;
+    const auto& value = option.second;
+
+    // Initialize a map of display parameters and their corresponding functions.
+    const std::map<std::string, Function> display_params = {
+        {"version", {version}},
+        {"time", {time}},
+        {"gpu_stats", {gpu_stats}},
+        {"cpu_stats", {cpu_stats}},
+        {"core_load", {core_load}},
+        {"io_read", {io_stats}},
+        {"io_write", {io_stats}},
+        {"arch", {arch}},
+        {"wine", {wine}},
+        {"procmem", {procmem}},
+        {"gamemode", {gamemode}},
+        {"vkbasalt", {vkbasalt}},
+        {"engine_version", {engine_version}},
+        {"vulkan_driver", {vulkan_driver}},
+        {"resolution", {resolution}},
+        {"show_fps_limit", {show_fps_limit}},
+        {"vram", {vram}},
+        {"proc_vram", {proc_vram}},
+        {"ram", {ram}},
+        {"fps", {fps}},
+        {"gpu_name", {gpu_name}},
+        {"frame_timing", {frame_timing}},
+        {"media_player", {media_player}},
+        {"custom_text", {custom_text}},
+        {"custom_text_center", {custom_text_center}},
+        {"exec", {_exec}},
+        {"battery", {battery}},
+        {"fps_only", {fps_only}},
+        {"fsr", {gamescope_fsr}},
+        {"debug", {gamescope_frame_timing}},
+        {"device_battery", {device_battery}},
+        {"frame_count", {frame_count}},
+        {"fan", {fan}},
+        {"throttling_status", {throttling_status}},
+        {"exec_name", {exec_name}},
+        {"duration", {duration}},
+        {"graphs", {graphs}},
+        {"fps_metrics", {fps_metrics}},
+        {"hdr", {hdr}},
+        {"refresh_rate", {refresh_rate}},
+        {"winesync", {winesync}},
+        {"present_mode", {present_mode}},
+        {"network", {network}},
+        {"display_server", {_display_session}},
+        {"fex_stats", {fex_stats}},
+        {"ftrace", {ftrace}},
+    };
+
+    auto check_param = display_params.find(param);
+    if (check_param != display_params.end()) {
+        const Function& func = check_param->second;
+
+        if (param == "debug") {
+            ordered_functions.push_back({gamescope_frame_timing, "gamescope_frame_timing", value});
+        } else if (param == "fsr") {
+            ordered_functions.push_back({gamescope_fsr, "gamescope_fsr", value});
+        } else if (param == "io_read" || param == "io_write") {
+            // Don't add twice
+            if (std::none_of(ordered_functions.begin(), ordered_functions.end(),
+                [](const auto& a) { return a.name == "io_stats"; })) {
+                ordered_functions.push_back({io_stats, "io_stats", value});
+            }
+        } else if (param == "exec") {
+            ordered_functions.push_back({_exec, "exec", value});
+            exec_list.push_back({int(ordered_functions.size() - 1), value});
+        } else if (param == "graphs") {
+            auto values = str_tokenize(value);
+            for (auto& val : values) {
+                if (find(permitted_params.begin(), permitted_params.end(), val) != permitted_params.end()) {
+                    ordered_functions.push_back({graphs, "graph: " + val, val});
+                } else {
+                    SPDLOG_ERROR("Unrecognized graph type: {}", val);
+                }
+            }
+        } else {
+            // Use this to always add to the front of the vector
+            // ordered_functions.insert(ordered_functions.begin(), std::make_pair(param, value));
+            ordered_functions.push_back({func.run, param, value});
+        }
+    }
+    return;
+}
+
+void HudElements::legacy_elements(const overlay_params* temp_params){
+    string value = "NULL";
+    ordered_functions.clear();
+
+    if (temp_params->enabled[OVERLAY_PARAM_ENABLED_time])
+        ordered_functions.push_back({time, "time", value});
+    if (temp_params->enabled[OVERLAY_PARAM_ENABLED_version])
+        ordered_functions.push_back({version, "version", value});
+    if (temp_params->enabled[OVERLAY_PARAM_ENABLED_gpu_stats])
+        ordered_functions.push_back({gpu_stats, "gpu_stats", value});
+    if (temp_params->enabled[OVERLAY_PARAM_ENABLED_cpu_stats])
+        ordered_functions.push_back({cpu_stats, "cpu_stats", value});
+    if (temp_params->enabled[OVERLAY_PARAM_ENABLED_core_load])
+        ordered_functions.push_back({core_load, "core_load", value});
+    if (temp_params->enabled[OVERLAY_PARAM_ENABLED_io_read] || temp_params->enabled[OVERLAY_PARAM_ENABLED_io_write])
+        ordered_functions.push_back({io_stats, "io_stats", value});
+    if (temp_params->enabled[OVERLAY_PARAM_ENABLED_vram])
+        ordered_functions.push_back({vram, "vram", value});
+    if (temp_params->enabled[OVERLAY_PARAM_ENABLED_proc_vram])
+        ordered_functions.push_back({proc_vram, "proc_vram", value});
+    if (temp_params->enabled[OVERLAY_PARAM_ENABLED_ram])
+        ordered_functions.push_back({ram, "ram", value});
+    if (temp_params->enabled[OVERLAY_PARAM_ENABLED_procmem])
+        ordered_functions.push_back({procmem, "procmem", value});
+    if (!temp_params->network.empty())
+        ordered_functions.push_back({network, "network", value});
+    if (temp_params->enabled[OVERLAY_PARAM_ENABLED_battery])
+        ordered_functions.push_back({battery, "battery", value});
+    if (temp_params->enabled[OVERLAY_PARAM_ENABLED_fan])
+        ordered_functions.push_back({fan, "fan", value});
+    if (temp_params->enabled[OVERLAY_PARAM_ENABLED_fsr])
+        ordered_functions.push_back({gamescope_fsr, "gamescope_fsr", value});
+    if (temp_params->enabled[OVERLAY_PARAM_ENABLED_hdr])
+        ordered_functions.push_back({hdr, "hdr", value});
+    if (temp_params->enabled[OVERLAY_PARAM_ENABLED_throttling_status])
+        ordered_functions.push_back({throttling_status, "throttling_status", value});
+    if (temp_params->enabled[OVERLAY_PARAM_ENABLED_fps])
+        ordered_functions.push_back({fps, "fps", value});
+    for (const auto& pair : options) {
+        if (pair.first.find("graphs") != std::string::npos) {
+            std::stringstream ss(pair.second);
+            std::string token;
+            while (std::getline(ss, token, ',')){
+                ordered_functions.push_back({graphs, "graphs", token});
+            }
+        }
+    }
+    if (!temp_params->fps_metrics.empty())
+        ordered_functions.push_back({fps_metrics, "fps_metrics", value});
+    if (temp_params->enabled[OVERLAY_PARAM_ENABLED_fps_only])
+        ordered_functions.push_back({fps_only, "fps_only", value});
+    if (temp_params->enabled[OVERLAY_PARAM_ENABLED_engine_version])
+        ordered_functions.push_back({engine_version, "engine_version", value});
+    if (temp_params->enabled[OVERLAY_PARAM_ENABLED_gpu_name])
+        ordered_functions.push_back({gpu_name, "gpu_name", value});
+    if (temp_params->enabled[OVERLAY_PARAM_ENABLED_vulkan_driver])
+        ordered_functions.push_back({vulkan_driver, "vulkan_driver", value});
+    if (temp_params->enabled[OVERLAY_PARAM_ENABLED_arch])
+        ordered_functions.push_back({arch, "arch", value});
+    if (temp_params->enabled[OVERLAY_PARAM_ENABLED_wine])
+        ordered_functions.push_back({wine, "wine", value});
+    if (temp_params->enabled[OVERLAY_PARAM_ENABLED_frame_timing])
+        ordered_functions.push_back({frame_timing, "frame_timing", value});
+    if (temp_params->enabled[OVERLAY_PARAM_ENABLED_frame_count])
+        ordered_functions.push_back({frame_count, "frame_count", value});
+    if (temp_params->enabled[OVERLAY_PARAM_ENABLED_debug] && !temp_params->enabled[OVERLAY_PARAM_ENABLED_horizontal])
+        ordered_functions.push_back({gamescope_frame_timing, "gamescope_frame_timing", value});
+    if (temp_params->enabled[OVERLAY_PARAM_ENABLED_gamemode])
+        ordered_functions.push_back({gamemode, "gamemode", value});
+    if (temp_params->enabled[OVERLAY_PARAM_ENABLED_vkbasalt])
+        ordered_functions.push_back({vkbasalt, "vkbasalt", value});
+    if (temp_params->enabled[OVERLAY_PARAM_ENABLED_show_fps_limit])
+        ordered_functions.push_back({show_fps_limit, "show_fps_limit", value});
+    if (temp_params->enabled[OVERLAY_PARAM_ENABLED_resolution])
+        ordered_functions.push_back({resolution, "resolution", value});
+    if (!temp_params->device_battery.empty() )
+        ordered_functions.push_back({device_battery, "device_battery", value});
+    if (temp_params->enabled[OVERLAY_PARAM_ENABLED_media_player])
+        ordered_functions.push_back({media_player, "media_player", value});
+    if (temp_params->enabled[OVERLAY_PARAM_ENABLED_exec_name])
+        ordered_functions.push_back({exec_name, "exec_name", value});
+    if (temp_params->enabled[OVERLAY_PARAM_ENABLED_duration])
+        ordered_functions.push_back({duration, "duration", value});
+    if (temp_params->enabled[OVERLAY_PARAM_ENABLED_winesync])
+        ordered_functions.push_back({winesync, "winesync", value});
+    if (temp_params->enabled[OVERLAY_PARAM_ENABLED_present_mode])
+        ordered_functions.push_back({present_mode, "present_mode", value});
+    if (temp_params->enabled[OVERLAY_PARAM_ENABLED_refresh_rate])
+        ordered_functions.push_back({refresh_rate, "refresh_rate", value});
+    if (temp_params->enabled[OVERLAY_PARAM_ENABLED_display_server])
+        ordered_functions.push_back({_display_session, "display_session", value});
+    if (temp_params->fex_stats.enabled)
+        ordered_functions.push_back({fex_stats, "fex_stats", value});
+#ifdef HAVE_FTRACE
+    if (temp_params->ftrace.enabled)
+        ordered_functions.push_back({ftrace, "ftrace", value});
+#endif
+}
+
+void HudElements::update_exec(){
+#ifdef __linux__
+    // TODO: exec needs a rewrite using as using fork() is not safe in multithread.
+    // We should probably use posix_spawn instead.
+    // This currently stalls games using feral launcher.
+    // For now don't init shell unless we have some exec options.
+    if (exec_list.empty())
+        return;
+
+    if (!HUDElements.shell)
+        HUDElements.shell = std::make_unique<Shell>();
+
+    for(auto& item : exec_list){
+        std::string ret = HUDElements.shell->exec(item.value + "\n");
+        // use the previous ret if we get bad system call
+        if (ret.find("Bad system call") == std::string::npos)
+            item.ret = ret;
+    }
+#endif
+}
+
+std::string_view HudElements::get_vulkan_present_mode_short_name(VkPresentModeKHR mode) {
+    static constexpr std::string_view prefix = "VK_PRESENT_MODE_";
+    static constexpr std::string_view suffix = "_KHR";
+
+    auto name = std::string_view{string_VkPresentModeKHR(mode)};
+    name = strip_prefix(name, prefix);
+    name = strip_suffix(name, suffix);
+
+    return name;
+}
+
+HudElements HUDElements;

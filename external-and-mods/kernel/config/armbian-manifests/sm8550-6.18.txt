@@ -1,0 +1,8 @@
+# Armbian sm8550-6.18 patch manifest (fallback when GitHub API rate-limits).
+# Presence of this file marks the series as published for offline support discovery.
+# Real patches are fetched into .cache/armbian-patches/sm8550-6.18/ by ./make.sh.
+# Update with: ./scripts/update-armbian-manifests.sh (optional)
+#
+# Includes (among others) dts-qcom-sm8550-add-opp-acd-level.patch — skipped by
+# default via PATCH_SKIP in config/defaults.conf (GPU glitch mitigation).
+sm8550-6.18

@@ -1,0 +1,406 @@
+#!/bin/sh
+
+COMMON_STATIC_ROOT="/usr/share/qcom/sm8550/AYN/thor"
+DEVICE_ID=""
+DEVICE_NAME=""
+STATE_DIR=""
+RPC_ROOT=""
+REGISTRY=""
+REGISTRY_MARKER=""
+REGISTRY_VERSION=""
+REGISTRY_MODE=""
+SENSOR_CONFIG=""
+SENSOR_REG_CONF=""
+DSP_ADSP=""
+AUDIO_PATTERN=""
+ROOT_PID="/var/run/hexagonrpcd-adsp-root.pid"
+SENSORS_PID="/var/run/hexagonrpcd-adsp-sensors.pid"
+READY_FILE="/var/run/batocera-qcom-sensors.ready"
+LOG_DIR="/userdata/system/logs"
+LOG_FILE="${LOG_DIR}/qcom-sensors.log"
+SUPERVISOR="/usr/bin/qcom-sensors-rpc-supervisor"
+FASTRPC_DEVICE=""
+PERSIST_MOUNT="/var/run/qcom-sensors-odin2-persist"
+PERSIST_MOUNTED_BY_US=0
+
+select_device_profile() {
+	compatible=$(tr '\000' '\n' < /proc/device-tree/compatible 2>/dev/null)
+	if echo "${compatible}" | grep -qx "ayn,thor"; then
+		DEVICE_ID="thor"
+		DEVICE_NAME="AYN Thor"
+		REGISTRY_VERSION="1"
+		REGISTRY_MODE="generate"
+		SENSOR_REG_CONF="${COMMON_STATIC_ROOT}/sensors/sns_reg.conf"
+		AUDIO_PATTERN="AYNThor|AYN-Thor"
+	elif echo "${compatible}" | grep -qx "ayn,odin2"; then
+		DEVICE_ID="odin2"
+		DEVICE_NAME="AYN Odin 2"
+		REGISTRY_VERSION="stock-persist-v1"
+		REGISTRY_MODE="stock-persist"
+		SENSOR_REG_CONF="/usr/share/qcom/sm8550/AYN/odin2/sensors/sns_reg.conf"
+		AUDIO_PATTERN="AYNOdin2|AYN-Odin2"
+	else
+		return 1
+	fi
+
+	STATE_DIR="/userdata/system/qcom-sensors/${DEVICE_ID}"
+	RPC_ROOT="${STATE_DIR}/root"
+	REGISTRY="${STATE_DIR}/registry"
+	REGISTRY_MARKER="${STATE_DIR}/registry.version"
+	SENSOR_CONFIG="${COMMON_STATIC_ROOT}/sensors/config"
+	DSP_ADSP="${COMMON_STATIC_ROOT}/dsp/adsp"
+	return 0
+}
+
+log_msg() {
+	echo "[$(date '+%F %T')] $*" >> "${LOG_FILE}"
+}
+
+registry_ready() {
+	registry_dir="${1:-${REGISTRY}}"
+	case "${DEVICE_ID}" in
+		thor)
+			[ -s "${registry_dir}/sh5001_0_platform.config" ] &&
+				[ -s "${registry_dir}/sh5001_0_platform.orient" ]
+			;;
+		odin2)
+			[ -s "${registry_dir}/lsm6dsv_0_platform.config" ] &&
+				[ -s "${registry_dir}/lsm6dsv_0_platform.orient" ] &&
+				grep -aq "lsm6dsv" \
+					"${registry_dir}/default_sensors.sensor_temperature.attr_1"
+			;;
+		*)
+			return 1
+			;;
+	esac
+}
+
+prepare_rpc_files() {
+	mkdir -p "${RPC_ROOT}/sensors" "${RPC_ROOT}/dsp" "${RPC_ROOT}/socinfo"
+	ln -snf "${SENSOR_CONFIG}" "${RPC_ROOT}/sensors/config"
+	ln -snf "${SENSOR_REG_CONF}" "${RPC_ROOT}/sensors/sns_reg.conf"
+	ln -snf "${REGISTRY}" "${RPC_ROOT}/sensors/registry"
+
+	reg_config_version=$(sed -n 's/^version=//p' \
+		"${SENSOR_REG_CONF}" | head -n 1)
+	[ -n "${reg_config_version}" ] || reg_config_version=1
+	printf 'version=%s\000' "${reg_config_version}" \
+		> "${RPC_ROOT}/sensors/sns_reg_version"
+
+	# Mainline socinfo exposes only a subset of Android's selector files.
+	# Both validated stock sensor registries use the Kailua HDK profile.
+	if [ -L "${RPC_ROOT}/socinfo" ]; then
+		rm -f "${RPC_ROOT}/socinfo"
+		mkdir -p "${RPC_ROOT}/socinfo"
+	fi
+	for socinfo_field in soc_id revision machine family; do
+		if [ -r "/sys/devices/soc0/${socinfo_field}" ]; then
+			tr -d '\000' < "/sys/devices/soc0/${socinfo_field}" \
+				> "${RPC_ROOT}/socinfo/${socinfo_field}"
+		fi
+	done
+	printf '%s\n' HDK > "${RPC_ROOT}/socinfo/hw_platform"
+	printf '%s\n' 0 > "${RPC_ROOT}/socinfo/platform_subtype"
+	printf '%s\n' 0 > "${RPC_ROOT}/socinfo/platform_subtype_id"
+	printf '%s\n' 0 > "${RPC_ROOT}/socinfo/platform_version"
+
+	if [ -d "${DSP_ADSP}" ]; then
+		if [ -d "${RPC_ROOT}/dsp/adsp" ] && [ ! -L "${RPC_ROOT}/dsp/adsp" ]; then
+			# Prototype builds used a real runtime directory here. Preserve any
+			# helper payloads they accumulated while refreshing packaged files.
+			cp -a "${DSP_ADSP}/." "${RPC_ROOT}/dsp/adsp/" || return 1
+			log_msg "Retained legacy DSP runtime directory and refreshed packaged payloads"
+		else
+			ln -snf "${DSP_ADSP}" "${RPC_ROOT}/dsp/adsp"
+		fi
+	else
+		mkdir -p "${RPC_ROOT}/dsp/adsp"
+	fi
+}
+
+prepare_thor_registry() {
+	if [ "$(cat "${REGISTRY_MARKER}" 2>/dev/null)" = "${REGISTRY_VERSION}" ]; then
+		if registry_ready; then
+			return 0
+		fi
+		log_msg "Persistent sensor registry is incomplete; refusing to overwrite calibration"
+		return 1
+	fi
+
+	# The registry gains calibration learned by this individual unit. Generate
+	# only for new state and never replace an existing registry automatically.
+	if find "${REGISTRY}" -mindepth 1 -maxdepth 1 -type f -print -quit 2>/dev/null | grep -q .; then
+		if registry_ready; then
+			log_msg "Existing unversioned ${DEVICE_NAME} sensor registry retained"
+			echo "${REGISTRY_VERSION}" > "${REGISTRY_MARKER}"
+			return 0
+		fi
+		log_msg "Existing unversioned sensor registry is incomplete; refusing to overwrite it"
+		return 1
+	fi
+
+	if [ -r /sys/devices/soc0/soc_id ]; then
+		soc_id=$(tr -d '\000\r\n ' < /sys/devices/soc0/soc_id)
+	else
+		soc_id=""
+	fi
+	[ -n "${soc_id}" ] || soc_id=603
+
+	registry_tmp="${STATE_DIR}/registry.new.$$"
+	rm -rf "${registry_tmp}"
+	mkdir -p "${registry_tmp}"
+
+	if ! sscregistrygen -p HDK -s "${soc_id}" \
+		"${SENSOR_CONFIG}" "${registry_tmp}" >> "${LOG_FILE}" 2>&1; then
+		rm -rf "${registry_tmp}"
+		log_msg "sscregistrygen failed"
+		return 1
+	fi
+
+	if ! registry_ready "${registry_tmp}"; then
+		rm -rf "${registry_tmp}"
+		log_msg "SH5001 registry profile was not generated (platform HDK, SoC ${soc_id})"
+		return 1
+	fi
+
+	mv "${registry_tmp}"/* "${REGISTRY}"/
+	rmdir "${registry_tmp}"
+	echo "${REGISTRY_VERSION}" > "${REGISTRY_MARKER}"
+	log_msg "Generated persistent SH5001 registry for platform HDK, SoC ${soc_id}"
+}
+
+mount_odin2_persist() {
+	if grep -qs " ${PERSIST_MOUNT} " /proc/mounts; then
+		return 0
+	fi
+	if [ ! -e /dev/disk/by-partlabel/persist ]; then
+		log_msg "Android persist partition was not found"
+		return 1
+	fi
+
+	mkdir -p "${PERSIST_MOUNT}"
+	if ! mount -t ext4 -o ro,noload /dev/disk/by-partlabel/persist \
+		"${PERSIST_MOUNT}" >> "${LOG_FILE}" 2>&1; then
+		log_msg "Unable to mount Android persist read-only"
+		return 1
+	fi
+	PERSIST_MOUNTED_BY_US=1
+}
+
+unmount_odin2_persist() {
+	if [ "${PERSIST_MOUNTED_BY_US}" -eq 1 ]; then
+		umount "${PERSIST_MOUNT}" >> "${LOG_FILE}" 2>&1 || true
+		PERSIST_MOUNTED_BY_US=0
+	fi
+}
+
+prepare_odin2_registry() {
+	if [ "$(cat "${REGISTRY_MARKER}" 2>/dev/null)" = "${REGISTRY_VERSION}" ] &&
+	   registry_ready; then
+		return 0
+	fi
+
+	# Preserve learned per-unit calibration once Batocera owns a complete copy.
+	if find "${REGISTRY}" -mindepth 1 -maxdepth 1 -type f -print -quit 2>/dev/null | grep -q .; then
+		if registry_ready; then
+			log_msg "Existing Odin 2 stock sensor registry retained"
+			echo "${REGISTRY_VERSION}" > "${REGISTRY_MARKER}"
+			return 0
+		fi
+		log_msg "Existing Odin 2 sensor registry is incomplete; refusing to overwrite it"
+		return 1
+	fi
+
+	mount_odin2_persist || return 1
+	stock_registry="${PERSIST_MOUNT}/sensors/registry/registry"
+	if ! registry_ready "${stock_registry}"; then
+		log_msg "Android persist does not contain a complete LSM6DSV registry"
+		unmount_odin2_persist
+		return 1
+	fi
+
+	registry_tmp="${STATE_DIR}/registry.new.$$"
+	rm -rf "${registry_tmp}"
+	mkdir -p "${registry_tmp}"
+	if ! cp -a "${stock_registry}/." "${registry_tmp}/"; then
+		rm -rf "${registry_tmp}"
+		unmount_odin2_persist
+		log_msg "Unable to seed the Odin 2 registry from Android persist"
+		return 1
+	fi
+	unmount_odin2_persist
+
+	if ! registry_ready "${registry_tmp}"; then
+		rm -rf "${registry_tmp}"
+		log_msg "Copied Odin 2 registry failed validation"
+		return 1
+	fi
+	cp -a "${registry_tmp}/." "${REGISTRY}/"
+	rm -rf "${registry_tmp}"
+	echo "${REGISTRY_VERSION}" > "${REGISTRY_MARKER}"
+	log_msg "Seeded persistent LSM6DSV registry from Android persist (read-only)"
+}
+
+prepare_registry() {
+	mkdir -p "${STATE_DIR}" "${REGISTRY}" "${LOG_DIR}"
+
+	if [ ! -d "${SENSOR_CONFIG}" ] || [ ! -r "${SENSOR_REG_CONF}" ]; then
+		log_msg "Static ${DEVICE_NAME} sensor profile is incomplete"
+		return 1
+	fi
+
+	prepare_rpc_files || return 1
+	case "${REGISTRY_MODE}" in
+		generate)
+			prepare_thor_registry
+			;;
+		stock-persist)
+			prepare_odin2_registry
+			;;
+		*)
+			return 1
+			;;
+	esac
+}
+
+select_fastrpc_device() {
+	for device in /dev/fastrpc-adsp /dev/fastrpc-adsp-secure; do
+		if [ -e "${device}" ]; then
+			FASTRPC_DEVICE="${device}"
+			return 0
+		fi
+	done
+
+	return 1
+}
+
+wait_for_fastrpc() {
+	i=0
+	while ! select_fastrpc_device && [ "${i}" -lt 100 ]; do
+		sleep 0.1
+		i=$((i + 1))
+	done
+
+	select_fastrpc_device
+}
+
+wait_for_audio_card() {
+	# Audio and SensorsPD share the ADSP. Let ALSA finish binding the device
+	# sound card before opening the sensor FastRPC sessions; an ADSP recovery
+	# after the sound card has started is not reliably recoverable in-place.
+	i=0
+	while [ "${i}" -lt 200 ]; do
+		if grep -qE "${AUDIO_PATTERN}" /proc/asound/cards 2>/dev/null; then
+			return 0
+		fi
+		sleep 0.1
+		i=$((i + 1))
+	done
+
+	return 1
+}
+
+wait_for_pidfile() {
+	pid_file="$1"
+	i=0
+	while [ "${i}" -lt 50 ]; do
+		pid=$(cat "${pid_file}" 2>/dev/null)
+		if [ -n "${pid}" ] && kill -0 "${pid}" 2>/dev/null; then
+			return 0
+		fi
+		sleep 0.1
+		i=$((i + 1))
+	done
+
+	return 1
+}
+
+start_daemons() {
+	select_device_profile || return 0
+	[ -x /usr/bin/hexagonrpcd ] || return 0
+	[ -x "${SUPERVISOR}" ] || return 0
+	mkdir -p "${LOG_DIR}"
+	rm -f "${READY_FILE}"
+
+	if [ -x /etc/init.d/S27qcom-qrtr ] &&
+	   ! /etc/init.d/S27qcom-qrtr start; then
+		log_msg "QRTR nameserver failed to start"
+		return 1
+	fi
+
+	if ! wait_for_audio_card; then
+		log_msg "${DEVICE_NAME} audio card did not become ready; leaving sensor FastRPC stopped"
+		return 1
+	fi
+	log_msg "${DEVICE_NAME} audio card is ready"
+
+	prepare_registry || return 1
+
+	if ! wait_for_fastrpc; then
+		log_msg "No ADSP FastRPC device appeared"
+		return 1
+	fi
+	log_msg "Using ${FASTRPC_DEVICE}"
+
+	start-stop-daemon --start --quiet --background --make-pidfile \
+		--pidfile "${SENSORS_PID}" --exec "${SUPERVISOR}" -- \
+		"${LOG_FILE}" "ADSP SensorsPD listener" - /usr/bin/hexagonrpcd \
+		-f "${FASTRPC_DEVICE}" -d adsp -s -R "${RPC_ROOT}"
+	if ! wait_for_pidfile "${SENSORS_PID}"; then
+		log_msg "ADSP SensorsPD FastRPC supervisor failed to start"
+		return 1
+	fi
+
+	# SensorsPD and RootPD share one FastRPC node. Give SensorsPD the first
+	# attach attempt, then let both supervisors survive ADSP/PDR restarts.
+	sleep 1
+
+	start-stop-daemon --start --quiet --background --make-pidfile \
+		--pidfile "${ROOT_PID}" --exec "${SUPERVISOR}" -- \
+		"${LOG_FILE}" "ADSP RootPD listener" - /usr/bin/hexagonrpcd \
+		-f "${FASTRPC_DEVICE}" -d adsp -R "${RPC_ROOT}"
+	if ! wait_for_pidfile "${ROOT_PID}"; then
+		log_msg "ADSP RootPD FastRPC supervisor failed to start"
+		stop_daemons
+		return 1
+	fi
+
+	sleep 1
+	root_pid=$(cat "${ROOT_PID}" 2>/dev/null)
+	if [ -z "${root_pid}" ] || ! kill -0 "${root_pid}" 2>/dev/null; then
+		rm -f "${ROOT_PID}"
+		log_msg "ADSP RootPD FastRPC supervisor exited during startup"
+		stop_daemons
+		return 1
+	fi
+
+	echo ready > "${READY_FILE}"
+	log_msg "Started supervised ${DEVICE_NAME} ADSP SensorsPD and RootPD FastRPC listeners"
+}
+
+stop_daemons() {
+	rm -f "${READY_FILE}"
+	start-stop-daemon --stop --quiet --remove-pidfile \
+		--pidfile "${SENSORS_PID}" --retry TERM/3/KILL/2 || true
+	start-stop-daemon --stop --quiet --remove-pidfile \
+		--pidfile "${ROOT_PID}" --retry TERM/3/KILL/2 || true
+}
+
+case "${1:-}" in
+	start)
+		start_daemons
+		;;
+	stop)
+		stop_daemons
+		;;
+	restart)
+		stop_daemons
+		start_daemons
+		;;
+	*)
+		echo "Usage: $0 {start|stop|restart}" >&2
+		exit 1
+		;;
+esac
+
+exit $?

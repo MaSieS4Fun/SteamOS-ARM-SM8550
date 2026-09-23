@@ -1,0 +1,28 @@
+#!/bin/sh
+# Initramfs local-premount: start /boot/masi-boot.log on FAT boot partition.
+
+PREREQ=""
+prereqs() {
+	echo "$PREREQ"
+}
+
+case "$1" in
+prereqs)
+	prereqs
+	exit 0
+	;;
+esac
+
+. /scripts/functions
+
+. /scripts/masi-bootlog-core
+
+masi_bootlog_enabled || exit 0
+
+log_begin_msg "MaSi boot log: capturing to /boot/masi-boot.log"
+if masi_bootlog_start_session; then
+	masi_bootlog_start_daemon
+	log_success_msg "MaSi boot log started"
+else
+	log_warning_msg "MaSi boot log: could not mount boot partition"
+fi

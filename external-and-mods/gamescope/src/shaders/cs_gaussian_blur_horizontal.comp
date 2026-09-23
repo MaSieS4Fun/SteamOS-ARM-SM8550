@@ -1,0 +1,65 @@
+#version 460
+
+#extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_scalar_block_layout : require
+
+#include "descriptor_set.h"
+
+layout(
+  local_size_x = 8,
+  local_size_y = 8,
+  local_size_z = 1) in;
+
+layout(binding = 0, scalar)
+uniform layers_t {
+    vec2 u_scale[VKR_MAX_LAYERS];
+    vec2 u_offset[VKR_MAX_LAYERS];
+    float u_opacity[VKR_MAX_LAYERS];
+    mat3x4 u_ctm[VKR_MAX_LAYERS];
+    uint u_borderMask;
+    uint u_frameId;
+    uint u_blur_radius;
+
+	uint u_shaderFilter;
+    uint u_alphaMode;
+
+    // hdr
+    float u_linearToNits;
+    float u_nitsToLinear;
+    float u_itmSdrNits;
+    float u_itmTargetNits;
+};
+
+#include "composite.h"
+#include "blur.h"
+
+void main()
+{
+    uvec2 coord = uvec2(gl_GlobalInvocationID.x, gl_GlobalInvocationID.y);
+    vec2 pos = coord;
+
+    vec3 outputValue = vec3(0);
+
+    if (c_layerCount > 0) {
+        if ((c_ycbcrMask & 1) != 0)
+            outputValue = gaussian_blur(s_ycbcr_samplers[0], 0, pos, u_blur_radius, false, false).rgb * u_opacity[0];
+        else
+            outputValue = gaussian_blur(s_samplers[0], 0, pos, u_blur_radius, false, true).rgb * u_opacity[0];
+    }
+
+    for (int i = 1; i < c_layerCount; i++) {
+        vec4 layerColor;
+        // YCBCR technically has incorrect blending here but... meh.
+        if ((c_ycbcrMask & (1 << i)) != 0)
+            layerColor = gaussian_blur(s_ycbcr_samplers[i], i, pos, u_blur_radius, false, false);
+        else
+            layerColor = gaussian_blur(s_samplers[i], i, pos, u_blur_radius, false, true);
+
+        outputValue = BlendLayer( i, outputValue, layerColor, u_opacity[i] );
+    }
+
+    uint colorspace = get_layer_colorspace(0);
+    outputValue = colorspace_plane_regamma_tf(outputValue, colorspace);
+    imageStore(dst, ivec2(coord), vec4(outputValue, 0));
+}
+

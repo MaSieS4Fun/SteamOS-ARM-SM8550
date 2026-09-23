@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=MESA Easy Manager
+GenericName=Mesa Freedreno Vulkan Manager
+Comment=Switch Freedreno Vulkan (libvulkan_freedreno.so) versions on Adreno GPUs
+Exec=mesa-easy-manager
+Icon=mesa-easy-manager
+Terminal=false
+Categories=System;Settings;
+Keywords=mesa;vulkan;freedreno;adreno;turnip;driver;
+StartupNotify=true
+X-AppImage-Version=1.5.0

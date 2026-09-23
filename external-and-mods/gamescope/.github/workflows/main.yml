@@ -1,0 +1,40 @@
+name: CI
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    steps:
+      - name: Prepare
+        run: |
+          pacman-key --init
+          pacman -Syu --noconfirm
+          pacman -S --noconfirm git meson clang glslang libcap wlroots0.18 \
+            sdl2 vulkan-headers libx11 libxmu libxcomposite libxrender libxres \
+            libxtst libxkbcommon libdrm libinput wayland-protocols benchmark \
+            xorg-xwayland pipewire cmake \
+            libavif libheif aom rav1e libdecor libxdamage \
+            luajit
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Build with gcc
+        run: |
+          export CC=gcc CXX=g++
+          meson build-gcc/ -Dinput_emulation=disabled --werror --auto-features=enabled
+          ninja -C build-gcc/
+      - name: Build with gcc (no vr)
+        run: |
+          export CC=gcc CXX=g++
+          meson build-gcc-novr/ -Dinput_emulation=disabled -Denable_openvr_support=false --werror --auto-features=enabled
+          ninja -C build-gcc-novr/
+#      - name: Build with clang
+#        run: |
+#          export CC=clang CXX=clang++
+#          meson build-clang/ -Dinput_emulation=disabled --werror --auto-features=enabled
+#          ninja -C build-clang/

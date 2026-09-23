@@ -1,0 +1,160 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: suckbluefrog <suckbluefrog@proton.me>
+Date: Thu, 16 Jul 2026 16:20:00 +0000
+Subject: [PATCH] hexagonrpcd: support large and extended callbacks
+
+Qualcomm's listener reserves a one-megabyte input cache, while HexagonRPC
+previously accepted only 256 bytes. SensorsPD registry callbacks exceed that
+limit.
+
+QAIC also encodes interface methods 31 and above through method 31 with the
+real method number prepended to the primitive argument buffer. Decode that
+escape form so apps_std ftruncate and rename can be dispatched.
+---
+ hexagonrpcd/listener.c | 68 ++++++++++++++++++++++++++++++++++++++++---
+ 1 file changed, 63 insertions(+), 5 deletions(-)
+
+--- a/hexagonrpcd/listener.c
++++ b/hexagonrpcd/listener.c
+@@ -24,12 +24,15 @@
+ #include <libhexagonrpc/interfaces/remotectl.def>
+ #include <stddef.h>
+ #include <stdio.h>
++#include <string.h>
+ 
+ #include "aee_error.h"
+ #include "interfaces/adsp_listener.def"
+ #include "iobuffer.h"
+ #include "listener.h"
+ 
++#define LISTENER_MAX_INPUT_SIZE	(1024U * 1024U)
++
+ static int adsp_listener_init2(int fd)
+ {
+ 	return fastrpc2(&adsp_listener_init2_def, fd, ADSP_LISTENER_HANDLE);
+@@ -142,19 +145,26 @@
+ 				  struct fastrpc_io_buffer **decoded)
+ {
+ 	struct fastrpc_decoder_context *ctx;
+-	char inbufs[256];
++	char *inbufs;
+ 	char *outbufs = NULL;
+ 	uint32_t inbufs_len;
+ 	uint32_t outbufs_len;
+ 	int ret;
+ 
++	inbufs = malloc(LISTENER_MAX_INPUT_SIZE);
++	if (inbufs == NULL) {
++		perror("Could not allocate listener input buffer");
++		return -1;
++	}
++
+ 	outbufs_len = outbufs_calculate_size(REMOTE_SCALARS_OUTBUFS(*sc), returned);
+ 
+ 	if (outbufs_len) {
+ 		outbufs = malloc(outbufs_len);
+ 		if (outbufs == NULL) {
+ 			perror("Could not allocate encoded output buffer");
+-			return -1;
++			ret = -1;
++			goto err_free_inbufs;
+ 		}
+ 
+ 		outbufs_encode(REMOTE_SCALARS_OUTBUFS(*sc), returned, outbufs);
+@@ -164,7 +174,7 @@
+ 				  *rctx, result,
+ 				  outbufs_len, outbufs,
+ 				  rctx, handle, sc,
+-				  &inbufs_len, 256, inbufs);
++				  &inbufs_len, LISTENER_MAX_INPUT_SIZE, inbufs);
+ 	if (ret) {
+ 		if (ret == -1)
+ 			perror("Could not fetch next FastRPC message");
+@@ -174,8 +184,9 @@
+ 		goto err_free_outbufs;
+ 	}
+ 
+-	if (inbufs_len > 256) {
+-		fprintf(stderr, "Large (>256B) input buffers aren't implemented\n");
++	if (inbufs_len > LISTENER_MAX_INPUT_SIZE) {
++		fprintf(stderr, "FastRPC input exceeds the %u-byte limit\n",
++				LISTENER_MAX_INPUT_SIZE);
+ 		ret = -1;
+ 		goto err_free_outbufs;
+ 	}
+@@ -203,6 +214,8 @@
+ 
+ err_free_outbufs:
+ 	free(outbufs);
++err_free_inbufs:
++	free(inbufs);
+ 	return ret;
+ }
+ 
+@@ -211,13 +224,16 @@
+ 				      uint32_t handle,
+ 				      uint32_t sc,
+ 			              uint32_t *result,
+-				      const struct fastrpc_io_buffer *decoded,
++				      struct fastrpc_io_buffer *decoded,
+ 				      struct fastrpc_io_buffer **returned)
+ {
+ 	const struct fastrpc_function_impl *impl;
++	const struct fastrpc_function_impl *extended_impl;
+ 	uint8_t in_count;
+ 	uint8_t out_count;
+ 	uint32_t method = REMOTE_SCALARS_METHOD(sc);
++	uint32_t extended_method;
++	size_t expected_prim_size;
+ 	int ret;
+ 
+ 	if (sc & 0xff) {
+@@ -239,6 +255,46 @@
+ 		return 1;
+ 	}
+ 
++	/*
++	 * QAIC reserves method 31 as an escape for interfaces with more than
++	 * 31 methods. The real method number is prepended to the primitive
++	 * input buffer. Normalize that buffer so the regular method
++	 * definitions and implementations can be used for both legacy and
++	 * extended calls.
++	 */
++	if (method == 31 && decoded != NULL && decoded[0].s >= sizeof(uint32_t)) {
++		extended_method = *(const uint32_t *) decoded[0].p;
++		if (extended_method >= 31
++		 && extended_method < ifaces[handle]->n_procs) {
++			extended_impl = &ifaces[handle]->procs[extended_method];
++			if (extended_impl->def != NULL
++			 && extended_impl->impl != NULL) {
++				in_count = extended_impl->def->in_bufs
++					 + ((extended_impl->def->in_nums
++					  || extended_impl->def->in_bufs
++					  || extended_impl->def->out_bufs) && 1);
++				out_count = extended_impl->def->out_bufs
++					  + (extended_impl->def->out_nums && 1);
++				expected_prim_size =
++					4U * (extended_impl->def->in_nums
++					    + extended_impl->def->in_bufs
++					    + extended_impl->def->out_bufs);
++
++				if (REMOTE_SCALARS_INBUFS(sc) == in_count
++				 && REMOTE_SCALARS_OUTBUFS(sc) == out_count
++				 && decoded[0].s == expected_prim_size
++						      + sizeof(uint32_t)) {
++					memmove(decoded[0].p,
++						(char *) decoded[0].p
++							+ sizeof(uint32_t),
++						expected_prim_size);
++					decoded[0].s = expected_prim_size;
++					method = extended_method;
++				}
++			}
++		}
++	}
++
+ 	impl = &ifaces[handle]->procs[method];
+ 
+ 	if (impl->def == NULL || impl->impl == NULL) {
+-- 
+2.50.1

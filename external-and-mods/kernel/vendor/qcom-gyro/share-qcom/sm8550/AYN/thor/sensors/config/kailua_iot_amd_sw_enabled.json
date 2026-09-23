@@ -1,0 +1,12 @@
+{
+  "config": {
+    "hw_platform": ["HDK"],
+    "platform_subtype_id": ["2"],
+    "soc_id": ["603"]
+  },
+  "sns_amd": {
+    "owner": "sns_amd",
+    "enabled": {"ver": "0","type": "int", "data": "1"
+    }
+  }
+}

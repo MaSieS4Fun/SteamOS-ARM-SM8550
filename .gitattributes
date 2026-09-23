@@ -1,0 +1,8 @@
+# Keep GitHub language stats on this project's glue, not vendored trees.
+external-and-mods/gamescope/** linguist-vendored
+external-and-mods/BOX64/** linguist-vendored
+external-and-mods/MangoHud/** linguist-vendored
+external-and-mods/lsfg-vk/** linguist-vendored
+external-and-mods/kernel/vendor/** linguist-vendored
+external-and-mods/kernel/reference/** linguist-vendored
+external-and-mods/kernel/device-tree/** linguist-vendored

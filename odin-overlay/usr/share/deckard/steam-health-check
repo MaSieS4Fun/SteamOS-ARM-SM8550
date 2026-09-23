@@ -1,0 +1,25 @@
+#!/bin/bash
+# Official Frame health-check re-extracts steam.tar.zst after a few short
+# sessions. Force-off while the wheel is up counts as failure and wipes the
+# handheld ARM client. Never repair that way on this board.
+set +e
+TRIPLEFROG_FILE="${XDG_RUNTIME_DIR:-/tmp}/steam-short-session-tracker"
+STEAMROOT="${HOME}/.local/share/Steam"
+mkdir -p "${STEAMROOT}" 2>/dev/null || true
+case "${1:-}" in
+  --track-started)
+    touch "${TRIPLEFROG_FILE}"
+    touch "${STEAMROOT}/.install-complete"
+    rm -f "${STEAMROOT}/.crash"
+    ;;
+  --track-stopped|--repair-now)
+    : >"${TRIPLEFROG_FILE}" 2>/dev/null || true
+    touch "${STEAMROOT}/.install-complete"
+    rm -f "${STEAMROOT}/.crash"
+    ;;
+  *)
+    echo "Usage: $0 --track-started | --track-stopped | --repair-now" >&2
+    exit 1
+    ;;
+esac
+exit 0

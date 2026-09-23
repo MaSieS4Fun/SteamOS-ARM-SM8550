@@ -1,0 +1,86 @@
+From d14a6500c6383af9318dcc4d475d524c13093339 Mon Sep 17 00:00:00 2001
+From: suckbluefrog <suckbluefrog@proton.me>
+Date: Thu, 16 Jul 2026 00:00:00 +0000
+Subject: [PATCH] hexagonrpcd: keep listener registration open
+
+Qualcomm's Android default-listener daemon keeps the remotectl context for
+adsp_default_listener open for the lifetime of its reverse-RPC loop. Closing
+the context immediately after registration can release DSP-side state that
+the listener still needs, particularly for a static SensorsPD.
+
+Return the registration context to the reverse-tunnel owner and close it only
+after the listener loop exits.
+---
+ hexagonrpcd/rpcd.c | 27 +++++++++++++++++----------
+ 1 file changed, 17 insertions(+), 10 deletions(-)
+
+diff --git a/hexagonrpcd/rpcd.c b/hexagonrpcd/rpcd.c
+index 40ac398..11055fd 100644
+--- a/hexagonrpcd/rpcd.c
++++ b/hexagonrpcd/rpcd.c
+@@ -112,24 +112,28 @@ static void remotectl_err(const char *err)
+ 	fprintf(stderr, "Could not remotectl: %s\n", err);
+ }
+ 
+-static int register_fastrpc_listener(int fd)
++static struct fastrpc_context *register_fastrpc_listener(int fd)
+ {
+-	struct fastrpc_context *ctx;
++	struct fastrpc_context *ctx = NULL;
+ 	int ret;
+ 
+ 	ret = remotectl_open(fd, "adsp_default_listener", &ctx, remotectl_err);
+ 	if (ret)
+-		return 1;
++		return NULL;
+ 
+ 	ret = adsp_default_listener_register(ctx);
+ 	if (ret) {
+ 		fprintf(stderr, "Could not register ADSP default listener\n");
+-		goto err;
++		remotectl_close(ctx, remotectl_err);
++		return NULL;
+ 	}
+ 
+-err:
+-	remotectl_close(ctx, remotectl_err);
+-	return ret;
++	/*
++	 * Keep the registration context alive while servicing reverse RPCs.
++	 * Qualcomm's Android listener daemon retains this handle for the
++	 * lifetime of its listener loop.
++	 */
++	return ctx;
+ }
+ 
+ static void print_usage(const char *argv0)
+@@ -253,10 +256,10 @@ static int start_clients(size_t n_progs, const char **progs, pid_t *pids)
+ 
+ static void *start_reverse_tunnel(int fd, const char *device_dir, const char *dsp)
+ {
++	struct fastrpc_context *listener_ctx;
+ 	struct fastrpc_interface **ifaces;
+ 	struct hexagonfs_dirent *root_dir;
+ 	size_t n_ifaces = 4;
+-	int ret;
+ 
+ 	ifaces = malloc(sizeof(struct fastrpc_interface) * n_ifaces);
+ 	if (ifaces == NULL)
+@@ -273,12 +276,13 @@ static void *start_reverse_tunnel(int fd, const char *device_dir, const char *ds
+ 	ifaces[2] = fastrpc_apps_mem_init(fd);
+ 	ifaces[3] = fastrpc_sns_registry_init();
+ 
+-	ret = register_fastrpc_listener(fd);
+-	if (ret)
++	listener_ctx = register_fastrpc_listener(fd);
++	if (listener_ctx == NULL)
+ 		goto err;
+ 
+ 	run_fastrpc_listener(fd, n_ifaces, ifaces);
+ 
++	remotectl_close(listener_ctx, remotectl_err);
+ 	fastrpc_localctl_deinit(ifaces[REMOTECTL_HANDLE]);
+ 	fastrpc_sns_registry_deinit(ifaces[3]);
+ 
+-- 
+2.50.1

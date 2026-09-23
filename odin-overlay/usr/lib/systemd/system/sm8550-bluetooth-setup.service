@@ -1,0 +1,13 @@
+[Unit]
+Description=SM8550 Bluetooth adapter power-on
+After=bluetooth.service
+Wants=bluetooth.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/lib/steamos/sm8550-bluetooth-setup
+
+[Install]
+WantedBy=bluetooth.target
+multi-user.target

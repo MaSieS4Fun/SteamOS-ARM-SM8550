@@ -1,0 +1,92 @@
+#!/bin/sh
+
+seconds="${1:-5}"
+compatible=$(tr '\000' '\n' < /proc/device-tree/compatible 2>/dev/null)
+if echo "${compatible}" | grep -qx "ayn,thor"; then
+	device_name="AYN Thor"
+	state_dir="/userdata/system/qcom-sensors/thor"
+	registry="${state_dir}/registry/sh5001_0_platform.config"
+	registry_name="SH5001"
+elif echo "${compatible}" | grep -qx "ayn,odin2"; then
+	device_name="AYN Odin 2"
+	state_dir="/userdata/system/qcom-sensors/odin2"
+	registry="${state_dir}/registry/lsm6dsv_0_platform.config"
+	registry_name="LSM6DSV"
+else
+	echo "FAIL: this test requires a supported AYN motion device"
+	exit 1
+fi
+
+case "${seconds}" in
+	*[!0-9]*|'')
+		echo "Usage: $0 [seconds]" >&2
+		exit 2
+		;;
+esac
+
+failed=0
+tmp_prefix="/var/run/qcom-sensors-test.$$"
+trap 'rm -f "${tmp_prefix}."*' EXIT HUP INT TERM
+
+check_pidfile() {
+	name="$1"
+	pidfile="$2"
+	pid=$(cat "${pidfile}" 2>/dev/null)
+	if [ -n "${pid}" ] && kill -0 "${pid}" 2>/dev/null; then
+		echo "PASS: ${name} is running"
+	else
+		echo "FAIL: ${name} is not running"
+		failed=1
+	fi
+}
+
+test_stream() {
+	sensor="$1"
+	label="$2"
+	pattern="$3"
+	output="${tmp_prefix}.${sensor}"
+
+	echo "Testing ${label} stream for ${seconds}s..."
+	status=0
+	timeout "$((seconds + 5))" ssccli --sensor "${sensor}" --timeout "${seconds}" \
+		> "${output}" 2>&1 || status=$?
+	cat "${output}"
+	if [ "${status}" -eq 0 ] && grep -q "${pattern}" "${output}"; then
+		echo "PASS: ${label} stream produced samples"
+	else
+		echo "FAIL: ${label} stream did not produce samples"
+		failed=1
+	fi
+}
+
+if [ -e /dev/fastrpc-adsp ]; then
+	echo "PASS: /dev/fastrpc-adsp exists"
+elif [ -e /dev/fastrpc-adsp-secure ]; then
+	echo "PASS: /dev/fastrpc-adsp-secure exists"
+else
+	echo "FAIL: no ADSP FastRPC device exists"
+	failed=1
+fi
+
+check_pidfile "FastRPC RootPD listener" "/var/run/hexagonrpcd-adsp-root.pid"
+check_pidfile "FastRPC SensorsPD listener" "/var/run/hexagonrpcd-adsp-sensors.pid"
+check_pidfile "Qualcomm DSU motion bridge" "/var/run/batocera-qcom-motion.pid"
+
+if [ -s "${registry}" ]; then
+	echo "PASS: persistent ${registry_name} registry exists for ${device_name}"
+else
+	echo "FAIL: persistent ${registry_name} registry is missing for ${device_name}"
+	failed=1
+fi
+
+test_stream "accelerometer" "accelerometer" "Accelerometer sensor measurement:"
+test_stream "gyroscope" "gyroscope" "Gyroscope sensor measurement:"
+
+if batocera-qcom-motion --check --port 26760; then
+	echo "PASS: DSU motion bridge produced a live packet"
+else
+	echo "FAIL: DSU motion bridge did not produce a live packet"
+	failed=1
+fi
+
+exit "${failed}"

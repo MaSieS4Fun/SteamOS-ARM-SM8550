@@ -1,0 +1,36 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: suckbluefrog <suckbluefrog@proton.me>
+Date: Thu, 16 Jul 2026 00:00:00 +0000
+Subject: [PATCH] cli: document gyroscope support and units
+
+The CLI already accepts the gyroscope sensor, but its option description
+omits it and labels angular velocity as linear metres per second. Include it
+in the supported list and report the SSC values as radians per second.
+---
+ src/libssc-cli.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/src/libssc-cli.c b/src/libssc-cli.c
+index be8f751..8dc7588 100644
+--- a/src/libssc-cli.c
++++ b/src/libssc-cli.c
+@@ -150,7 +150,7 @@ static gboolean
+ 
+ static void gyroscope_measurement (SSCSensorGyroscope *sensor, gfloat velocity_x, gfloat velocity_y, gfloat velocity_z, gpointer user_data)
+ {
+-	g_printf ("Gyroscope sensor measurement: X=%f Y=%f Z=%f m/s\n", velocity_x, velocity_y, velocity_z);
++	g_printf ("Gyroscope sensor measurement: X=%f Y=%f Z=%f rad/s\n", velocity_x, velocity_y, velocity_z);
+ 	fflush(stdout);
+ }
+ 
+@@ -168,7 +168,7 @@ int main (int argc, char **argv)
+ 	const GOptionEntry options[] = {
+ 		{ "version", 0, 0, G_OPTION_ARG_NONE, &print_version, "Print version information and exit.", NULL },
+ 		{ "debug", 'v', 0, G_OPTION_ARG_NONE, &debug, "Enable debug logs.", NULL },
+-		{ "sensor", 0, 0, G_OPTION_ARG_STRING, &sensor_str, "Enable a sensor. Supported sensors: 'proximity', 'light', 'accelerometer', 'magnetometer', 'compass'", NULL },
++		{ "sensor", 0, 0, G_OPTION_ARG_STRING, &sensor_str, "Enable a sensor. Supported sensors: 'proximity', 'light', 'accelerometer', 'magnetometer', 'compass', 'gyroscope'", NULL },
+ 		{ "timeout", 0, 0, G_OPTION_ARG_INT64, &timeout, "Number of seconds before this will timeout [default 10]", NULL },
+ 		{ NULL, 0, 0, G_OPTION_ARG_NONE, NULL, NULL, NULL }
+ 	};
+-- 
+2.50.1

@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# No elevation — stub only (no Valve dock firmware on this hardware).
+set -euo pipefail
+exec /usr/bin/jupiter-dock-updater "$@"

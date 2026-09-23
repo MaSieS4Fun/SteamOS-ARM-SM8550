@@ -1,0 +1,38 @@
+#!/bin/bash
+# Switch to Desktop starts official Plasma in the same user systemd as Game Mode.
+# start-gamescope-session used to import QT_QPA_PLATFORM=xcb into that manager;
+# plasmashell/ksplash then try X11, fail, and leave kwin on a black DSI.
+set -u
+
+if [[ ! -d /tmp/.X11-unix ]]; then
+  mkdir -p /tmp/.X11-unix
+fi
+# gamescope creates this dir without the sticky bit; kwin then refuses Xwayland.
+chmod 1777 /tmp/.X11-unix 2>/dev/null || true
+
+unset QT_QPA_PLATFORM
+unset GAMESCOPE_WAYLAND_DISPLAY
+unset GAMESCOPE_SESSION_TARGET
+export QT_QPA_PLATFORM=wayland
+export XDG_SESSION_TYPE=wayland
+export XDG_CURRENT_DESKTOP=KDE
+export XDG_SESSION_DESKTOP=KDE
+export DESKTOP_SESSION=plasma
+
+if command -v systemctl >/dev/null 2>&1; then
+  systemctl --user unset-environment \
+    QT_QPA_PLATFORM GAMESCOPE_WAYLAND_DISPLAY GAMESCOPE_SESSION_TARGET \
+    XDG_DESKTOP_PORTAL_DIR || true
+  systemctl --user set-environment \
+    QT_QPA_PLATFORM=wayland \
+    XDG_SESSION_TYPE=wayland \
+    XDG_CURRENT_DESKTOP=KDE \
+    XDG_SESSION_DESKTOP=KDE \
+    DESKTOP_SESSION=plasma || true
+fi
+
+if command -v dbus-update-activation-environment >/dev/null 2>&1; then
+  dbus-update-activation-environment --systemd \
+    QT_QPA_PLATFORM XDG_SESSION_TYPE XDG_CURRENT_DESKTOP \
+    XDG_SESSION_DESKTOP DESKTOP_SESSION >/dev/null 2>&1 || true
+fi

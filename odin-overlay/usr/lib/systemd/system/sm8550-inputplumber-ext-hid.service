@@ -1,0 +1,12 @@
+[Unit]
+Description=Toggle InputPlumber keyboard when USB/BT HID is present
+After=inputplumber.service
+Wants=inputplumber.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/steamos/sm8550-inputplumber-ext-hid
+Nice=5
+
+[Install]
+WantedBy=multi-user.target

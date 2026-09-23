@@ -1,0 +1,85 @@
+﻿<Page x:Class="ReShade.Setup.Pages.SelectApiPage"
+      xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+      xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" 
+      xmlns:d="http://schemas.microsoft.com/expression/blend/2008" 
+      mc:Ignorable="d" 
+      d:DesignWidth="510" d:DesignHeight="638"
+      Width="Auto" Height="Auto"
+      FocusManager.FocusedElement="{Binding ElementName=ApiD3D9}">
+  <DockPanel>
+    <Label DockPanel.Dock="Top" Margin="10" Padding="0" VerticalAlignment="Top" HorizontalContentAlignment="Stretch" Foreground="#FF003399" FontSize="16">
+      <StackPanel Orientation="Horizontal">
+        <TextBlock x:Uid="PageTitle">
+          Select the rendering API <TextBlock x:Name="AppName" x:FieldModifier="private" Text="the game or application" /> uses:
+        </TextBlock> 
+      </StackPanel>
+    </Label>
+    <TextBlock x:Uid="PageDescription" DockPanel.Dock="Top" Margin="10,5" TextWrapping="Wrap">
+      The preselected option is a guess based on a quick analysis of the executable.<LineBreak />If you do not know which rendering API the game uses, search for the game on <Hyperlink NavigateUri="https://www.pcgamingwiki.com/" RequestNavigate="OnHyperlinkNavigate">PCGamingWiki</Hyperlink> and look for a section with the title "API" on its page.
+    </TextBlock>
+    <StackPanel Orientation="Vertical" HorizontalAlignment="Center" VerticalAlignment="Center">
+      <RadioButton x:Name="ApiD3D9" x:FieldModifier="private" VerticalContentAlignment="Center">
+        <StackPanel Orientation="Horizontal" Margin="8">
+          <Image Source="Resources/DirectX.png" Height="65">
+            <Image.ToolTip>
+              <ToolTip>
+                <TextBlock Text="DirectX 9" />
+              </ToolTip>
+            </Image.ToolTip>
+          </Image>
+          <Label Content="_9" FontSize="18" VerticalAlignment="Center" />
+        </StackPanel>
+      </RadioButton>
+      <RadioButton x:Name="ApiDXGI" x:FieldModifier="private" VerticalContentAlignment="Center">
+        <StackPanel Orientation="Horizontal" Margin="8">
+          <Image Source="Resources/DirectX.png" Height="65">
+            <Image.ToolTip>
+              <ToolTip>
+                <TextBlock Text="DirectX 10/11/12" />
+              </ToolTip>
+            </Image.ToolTip>
+          </Image>
+          <Label Content="_10/11/12" FontSize="18" VerticalAlignment="Center" />
+        </StackPanel>
+      </RadioButton>
+      <RadioButton x:Name="ApiOpenGL" x:FieldModifier="private" VerticalContentAlignment="Center">
+        <StackPanel Orientation="Horizontal" Margin="8">
+          <Image Source="Resources/OpenGL.png" Height="65">
+            <Image.ToolTip>
+              <ToolTip>
+                <TextBlock Text="OpenGL" />
+              </ToolTip>
+            </Image.ToolTip>
+          </Image>
+          <AccessText Text="_OpenGL" Width="0" Height="0" />
+        </StackPanel>
+      </RadioButton>
+      <RadioButton x:Name="ApiVulkan" x:FieldModifier="private" VerticalContentAlignment="Center">
+        <StackPanel Orientation="Horizontal" Margin="8">
+          <Image Source="Resources/Vulkan.png" Height="65">
+            <Image.ToolTip>
+              <ToolTip>
+                <TextBlock Text="Vulkan" />
+              </ToolTip>
+            </Image.ToolTip>
+          </Image>
+          <AccessText Text="_Vulkan" Width="0" Height="0" />
+        </StackPanel>
+      </RadioButton>
+      <Separator Margin="0,8" />
+      <CheckBox x:Name="ApiOpenXR" x:FieldModifier="private" VerticalContentAlignment="Center">
+        <StackPanel Orientation="Horizontal" Margin="8">
+          <Image Source="Resources/OpenXR.png" Height="65">
+            <Image.ToolTip>
+              <ToolTip>
+                <TextBlock Text="OpenXR" />
+              </ToolTip>
+            </Image.ToolTip>
+          </Image>
+          <AccessText Text="Open_XR" Width="0" Height="0" />
+        </StackPanel>
+      </CheckBox>
+    </StackPanel>
+  </DockPanel>
+</Page>

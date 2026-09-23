@@ -1,0 +1,38 @@
+AYN Odin 2 Qualcomm Sensor Core data
+
+The regular Odin 2 uses an ST LSM6DSV IMU owned by Qualcomm's ADSP Sensor
+Core. Batocera starts the stock SensorsPD and RootPD FastRPC listeners, then
+publishes accelerometer and gyroscope samples through the shared DSU bridge.
+
+Unlike Thor's SH5001 profile, the selected Odin 2 registry already exists in
+the unit's Android persist partition. On the first Batocera sensor startup,
+S28qcom-sensors mounts that partition read-only with journal replay disabled,
+validates the LSM6DSV selection, and copies the registry to
+/userdata/system/qcom-sensors/odin2. Android persist is never modified and the
+Batocera copy is never replaced automatically, preserving learned per-unit
+calibration. Subsequent boots do not need to mount Android persist.
+
+The generic Kailua sensor configuration and sns_tppe.so helper are shared with
+Thor. Odin 2 retains its own version-1 sns_reg.conf and its own ADSP firmware
+under /lib/firmware/qcom/sm8550/ayn/odin2.
+
+Motion bridge
+-------------
+
+The Odin 2 profile maps its unrotated LSM6DSV stream into the shared console
+DSU frame. With controls facing up, raw gravity appears on -Z; the left and top
+edges appear on +X and +Y. The validated DSU accelerometer mapping is therefore
+(X, Z, Y), with the corresponding axial-vector gyroscope mapping
+(-X, Z, Y). S29qcom-motion selects this profile automatically from
+"ayn,odin2" and exposes slot 0 on 127.0.0.1:26760.
+
+Calibration is stored in
+/userdata/system/qcom-sensors/odin2/motion-calibration.ini using frame
+"odin2-dsu-v2". The shared "Odin 2 / Thor Sensor Calibration" entry in Tools
+collects a stationary gyro zero and five safe accelerometer poses without a
+face-down step.
+
+Cold-boot validation on a regular AYN Odin 2 confirmed concurrent AYN-Odin2
+audio, supervised SensorsPD and RootPD listeners, raw LSM6DSV streams, DSU
+delivery, pose calibration, and calibration reload after reboot. Run
+`batocera-qcom-sensors-test 5` for a complete smoke test.

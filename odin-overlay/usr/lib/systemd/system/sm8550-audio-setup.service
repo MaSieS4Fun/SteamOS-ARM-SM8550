@@ -1,0 +1,15 @@
+[Unit]
+Description=SM8550 AYN-Odin2 speaker UCM/I2S setup
+After=sound.target systemd-modules-load.service
+Wants=sound.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+StandardOutput=journal
+StandardError=journal
+ExecStart=/usr/lib/steamos/sm8550-audio-setup
+
+[Install]
+WantedBy=multi-user.target
+sound.target

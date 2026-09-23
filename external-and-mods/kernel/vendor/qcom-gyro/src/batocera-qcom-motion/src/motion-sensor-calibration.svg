@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1080" viewBox="0 0 1200 1080">
+  <defs>
+    <linearGradient id="background" x1="90" y1="55" x2="1110" y2="1025" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#111b31"/>
+      <stop offset="0.52" stop-color="#233b67"/>
+      <stop offset="1" stop-color="#16233d"/>
+    </linearGradient>
+    <linearGradient id="screen" x1="430" y1="315" x2="770" y2="625" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#18304d"/>
+      <stop offset="1" stop-color="#0b1423"/>
+    </linearGradient>
+    <linearGradient id="motion" x1="250" y1="210" x2="930" y2="720" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#52e6cb"/>
+      <stop offset="1" stop-color="#64a6ff"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-25%" width="140%" height="160%">
+      <feDropShadow dx="0" dy="24" stdDeviation="22" flood-color="#050a14" flood-opacity="0.55"/>
+    </filter>
+  </defs>
+
+  <rect width="1200" height="1080" rx="54" fill="url(#background)"/>
+  <circle cx="102" cy="118" r="180" fill="#4f78cb" opacity="0.12"/>
+  <circle cx="1118" cy="562" r="250" fill="#25d6bb" opacity="0.08"/>
+  <path d="M0 758C245 690 397 804 610 755c218-50 365-174 590-93v418H0z" fill="#0a1222" opacity="0.52"/>
+
+  <g fill="none" stroke="url(#motion)" stroke-width="18" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M266 292c103-133 284-204 463-167 85 18 160 56 222 109"/>
+    <path d="m929 172 33 74-81 5"/>
+    <path d="M944 633c-91 119-244 185-402 166-112-13-211-61-287-132"/>
+    <path d="m277 739-35-79 86-3"/>
+  </g>
+
+  <g filter="url(#shadow)">
+    <path d="M137 520c0-143 73-247 194-247h538c121 0 194 104 194 247v118c0 91-45 151-116 151-59 0-91-40-124-99l-24-42H401l-24 42c-33 59-65 99-124 99-71 0-116-60-116-151z" fill="#dce8fa"/>
+    <path d="M153 515c0-128 65-225 178-225h538c113 0 178 97 178 225v119c0 75-34 126-100 126-45 0-70-28-101-85l-29-53H383l-29 53c-31 57-56 85-101 85-66 0-100-51-100-126z" fill="#8ba5ce"/>
+    <rect x="392" y="307" width="416" height="326" rx="34" fill="#101827"/>
+    <rect x="414" y="329" width="372" height="282" rx="20" fill="url(#screen)"/>
+
+    <g stroke-linecap="round">
+      <path d="M600 380v180M510 470h180" stroke="#d7e4f7" stroke-width="8" opacity="0.25"/>
+      <circle cx="600" cy="470" r="80" fill="none" stroke="#52e6cb" stroke-width="9" opacity="0.9"/>
+      <circle cx="600" cy="470" r="17" fill="#ffd05b"/>
+      <path d="M600 470l67-51" stroke="#ffd05b" stroke-width="10"/>
+      <path d="m652 418 23-6-6 23" fill="none" stroke="#ffd05b" stroke-width="8" stroke-linejoin="round"/>
+    </g>
+
+    <circle cx="276" cy="438" r="56" fill="#152139"/>
+    <circle cx="276" cy="438" r="38" fill="#263a5d"/>
+    <circle cx="328" cy="612" r="49" fill="#152139"/>
+    <circle cx="328" cy="612" r="32" fill="#263a5d"/>
+    <circle cx="924" cy="438" r="49" fill="#152139"/>
+    <circle cx="924" cy="438" r="32" fill="#263a5d"/>
+    <circle cx="872" cy="612" r="56" fill="#152139"/>
+    <circle cx="872" cy="612" r="38" fill="#263a5d"/>
+
+    <g fill="#152139">
+      <rect x="217" y="545" width="118" height="40" rx="13"/>
+      <rect x="256" y="506" width="40" height="118" rx="13"/>
+    </g>
+    <g>
+      <circle cx="927" cy="530" r="22" fill="#52e6cb"/>
+      <circle cx="978" cy="579" r="22" fill="#ffcf5b"/>
+      <circle cx="876" cy="579" r="22" fill="#64a6ff"/>
+      <circle cx="927" cy="628" r="22" fill="#f2709c"/>
+    </g>
+  </g>
+
+  <g text-anchor="middle" font-family="DejaVu Sans, sans-serif" fill="#f5f8ff">
+    <text x="600" y="905" font-size="62" font-weight="700" letter-spacing="3">ODIN 2 / THOR</text>
+    <text x="600" y="978" font-size="42" font-weight="500" fill="#9fded9" letter-spacing="5">SENSOR CALIBRATION</text>
+  </g>
+</svg>

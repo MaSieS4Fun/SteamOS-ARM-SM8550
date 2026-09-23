@@ -1,0 +1,18 @@
+#!/bin/bash
+# No early DRM/GPU in initramfs — avoids HDMI dock hang (LT8912).
+[[ "$1" == "prereqs" ]] && exit 0
+. /usr/share/initramfs-tools/hook-functions
+
+shopt -s nullglob
+local_mod="${DESTDIR}/lib/modules"/*/
+[[ -d "${local_mod}" ]] || exit 0
+
+find "${local_mod}" -type f \( \
+    -name 'msm*.ko*' -o \
+    -name 'drm*.ko*' -o \
+    -name 'panel*.ko*' -o \
+    -name '*lt8912*.ko*' -o \
+    -name '*hdmi*.ko*' -o \
+    -name 'gpucpower*.ko*' -o \
+    -name 'kgsl*.ko*' \
+\) -print -delete 2>/dev/null || true

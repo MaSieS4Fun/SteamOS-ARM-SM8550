@@ -1,0 +1,48 @@
+﻿<Page x:Class="ReShade.Setup.Pages.SelectAppPage"
+      xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+      xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+      xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+      mc:Ignorable="d"
+      d:DesignWidth="510" d:DesignHeight="638"
+      Width="Auto" Height="Auto"
+      FocusManager.FocusedElement="{Binding ElementName=ItemsListBox}">
+  <DockPanel LastChildFill="True">
+    <DockPanel DockPanel.Dock="Top">
+      <Label x:Uid="PageTitle" Margin="10" Padding="0" VerticalAlignment="Top" Foreground="#FF003399" FontSize="16" Content="Select a game or application:" />
+      <ComboBox x:Name="SortBy" x:FieldModifier="private" DockPanel.Dock="Right" HorizontalAlignment="Right" VerticalContentAlignment="Center" Margin="10" Width="100" SelectedIndex="1" SelectionChanged="OnSortByChanged">
+        <ComboBoxItem x:Uid="SortByRecentlyUsed">Recently Used</ComboBoxItem>
+        <ComboBoxItem x:Uid="SortByAZ">A to Z</ComboBoxItem>
+        <ComboBoxItem x:Uid="SortByZA">Z to A</ComboBoxItem>
+      </ComboBox>
+      <Label x:Uid="SortByBoxLabel" DockPanel.Dock="Right" HorizontalAlignment="Right" VerticalAlignment="Center" Content="Sort by:" />
+    </DockPanel>
+    <TextBlock x:Uid="PageDescription" DockPanel.Dock="Bottom" Margin="10,5" TextWrapping="Wrap">
+      Browse and select a game to manage its ReShade installation.
+    </TextBlock>
+    <Grid DockPanel.Dock="Bottom" Margin="10,5">
+      <TextBlock x:Uid="BrowseButtonDescription" HorizontalAlignment="Left" VerticalAlignment="Center" Text="Can't find the desired game in the list?" />
+      <Button x:Uid="BrowseButton" HorizontalAlignment="Right" VerticalAlignment="Center" Width="100" Content="_Browse..." Click="OnBrowseClick" />
+    </Grid>
+    <TextBox x:Name="PathBox" DockPanel.Dock="Bottom" Margin="10,0,10,5" HorizontalAlignment="Stretch" GotFocus="OnPathGotFocus" TextChanged="OnPathTextChanged" Text="Search" />
+    <ListBox x:Name="ItemsListBox" x:FieldModifier="private" Margin="10,5" HorizontalContentAlignment="Stretch" SelectionChanged="OnSelectionChanged">
+      <ListBox.ItemTemplate>
+        <DataTemplate>
+          <Grid Margin="0,3">
+            <Grid.ToolTip>
+              <ToolTip>
+                <TextBlock Text="{Binding Path, Mode=OneTime}"/>
+              </ToolTip>
+            </Grid.ToolTip>
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="35" />
+              <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+            <Image Grid.Column="0" HorizontalAlignment="Left" Width="30" Height="30" Source="{Binding Icon, Mode=OneTime}" />
+            <TextBlock Grid.Column="1" VerticalAlignment="Center" Text="{Binding Name, Mode=OneTime}" />
+          </Grid>
+        </DataTemplate>
+      </ListBox.ItemTemplate>
+    </ListBox>
+  </DockPanel>
+</Page>

@@ -1,0 +1,4 @@
+#!/bin/bash
+# Official startplasma-wayland, after clearing Game Mode Qt/X11 leftovers.
+/usr/lib/steamos/sm8550-prepare-plasma
+exec /usr/bin/startplasma-wayland "$@"

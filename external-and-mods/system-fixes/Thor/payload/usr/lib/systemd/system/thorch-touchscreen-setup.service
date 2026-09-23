@@ -1,0 +1,11 @@
+[Unit]
+Description=Apply Thorch touchscreen calibration before display login
+After=systemd-udevd.service
+Before=display-manager.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/thorch-touchscreen-setup
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,64 @@
+From: MaSi-OS <masies@local>
+Subject: [PATCH] drm/msm/a6xx: stabilize A740 GMU GX_BW_PERF_VOTE HFI waits
+
+On Adreno 740 the GX_BW_PERF_VOTE HFI response can arrive after the stock
+1s poll window. Abandoning a late ACK desyncs the response queue
+(Unexpected message id) and shows up as freezes / input micro-stutters.
+
+- Retry the HFI wait a few times when no coredump is in progress
+- Use a longer per-try timeout for GX_BW_PERF_VOTE specifically
+- More retries for BW/perf votes than for other HFI messages
+
+---
+ drivers/gpu/drm/msm/adreno/a6xx_hfi.c | 35 +++++++++++++++++++++++++----------
+ 1 file changed, 25 insertions(+), 10 deletions(-)
+
+--- a/drivers/gpu/drm/msm/adreno/a6xx_hfi.c
++++ b/drivers/gpu/drm/msm/adreno/a6xx_hfi.c
+@@ -113,23 +113,38 @@
+ 	int ret;
+ 	u32 val;
+ 	struct a6xx_gpu *a6xx_gpu = container_of(gmu, struct a6xx_gpu, gmu);
++	unsigned int slow_retries = 0;
++	/* A740 BW/perf votes often need >1s; give them headroom without
++	 * slowing every other HFI message. */
++	unsigned int timeout_us = (id == HFI_H2F_MSG_GX_BW_PERF_VOTE) ?
++		2000000 : 1000000;
++	unsigned int max_slow = (id == HFI_H2F_MSG_GX_BW_PERF_VOTE) ? 8 : 3;
+ 
+ 	do {
+ 		/* Wait for a response */
+ 		ret = gmu_poll_timeout(gmu, REG_A6XX_GMU_GMU2HOST_INTR_INFO, val,
+-			val & A6XX_GMU_GMU2HOST_INTR_INFO_MSGQ, 100, 1000000);
++			val & A6XX_GMU_GMU2HOST_INTR_INFO_MSGQ, 100, timeout_us);
+ 
+ 		if (!ret)
+ 			break;
+ 
+-		if (completion_done(&a6xx_gpu->base.fault_coredump_done))
+-			break;
+-
+-		/* We may timeout because the GMU is temporarily wedged from
+-		 * pending faults from the GPU and we are taking a devcoredump.
+-		 * Wait until the MMU is resumed and try again.
++		if (!completion_done(&a6xx_gpu->base.fault_coredump_done)) {
++			/* We may timeout because the GMU is temporarily wedged from
++			 * pending faults from the GPU and we are taking a devcoredump.
++			 * Wait until the MMU is resumed and try again.
++			 */
++			wait_for_completion(&a6xx_gpu->base.fault_coredump_done);
++			continue;
++		}
++
++		/*
++		 * No coredump in progress. A740 GMU GX_BW_PERF_VOTE replies can
++		 * land just after the poll window; abandoning them desyncs HFI.
+ 		 */
+-		wait_for_completion(&a6xx_gpu->base.fault_coredump_done);
++		if (++slow_retries < max_slow)
++			continue;
++
++		break;
+ 	} while (true);
+ 
+ 	if (ret) {

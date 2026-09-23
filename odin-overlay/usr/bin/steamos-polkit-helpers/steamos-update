@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# No pkexec: Game Mode has no polkit agent and pkexec/atomupd → exit 127.
+set -uo pipefail
+exec /usr/bin/steamos-update "$@"

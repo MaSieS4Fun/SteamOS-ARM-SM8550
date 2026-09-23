@@ -1,0 +1,10 @@
+config BR2_PACKAGE_HEXAGONRPC
+	bool "hexagonrpc"
+	depends on BR2_aarch64
+	select BR2_PACKAGE_JSON_C
+	help
+	  Linux userspace FastRPC listener and filesystem service for Qualcomm
+	  Hexagon DSPs. This also installs sscregistrygen for preparing a QSH
+	  sensor registry from Android sensor configuration files.
+
+	  https://github.com/linux-msm/hexagonrpc

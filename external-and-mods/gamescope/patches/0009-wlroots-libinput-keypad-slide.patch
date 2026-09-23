@@ -1,0 +1,21 @@
+From: SteamOS-Ubuntu <noreply@local>
+Subject: [PATCH] wlroots: default case for newer libinput switch enums
+
+LIBINPUT_SWITCH_KEYPAD_SLIDE is an enum value, not a #define, so
+#if defined(...) never compiles the case and -Werror=switch still fails.
+A default: label silences -Wswitch on Resolute and older libinput.
+
+Apply from subprojects/wlroots with -p1 (against upstream 0.18).
+
+--- a/backend/libinput/switch.c
++++ b/backend/libinput/switch.c
+@@ -36,6 +36,10 @@
+ 	case LIBINPUT_SWITCH_TABLET_MODE:
+ 		wlr_event.switch_type = WLR_SWITCH_TYPE_TABLET_MODE;
+ 		break;
++	default:
++		/* KEYPAD_SLIDE (libinput 1.31+) and any future switch types. */
++		return;
+ 	}
+ 	switch (libinput_event_switch_get_switch_state(sevent)) {
+ 	case LIBINPUT_SWITCH_STATE_OFF:

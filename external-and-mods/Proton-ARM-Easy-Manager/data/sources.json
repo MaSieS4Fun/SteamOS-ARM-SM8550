@@ -1,0 +1,62 @@
+{
+  "version": 1,
+  "install_dir": "~/.local/share/Steam/compatibilitytools.d",
+  "arm_asset_patterns": [
+    "aarch64",
+    "arm64",
+    "-arm.tar",
+    "_arm.tar",
+    ".arm.tar"
+  ],
+  "exclude_asset_patterns": [
+    ".sha512sum",
+    ".sha256sum",
+    ".md5",
+    ".sum",
+    ".torrent",
+    ".txt",
+    ".json"
+  ],
+  "sources": [
+    {
+      "id": "proton-ge",
+      "title": "Proton-GE",
+      "description": "GloriousEggroll Proton with community fixes. ARM builds use the aarch64 asset when present.",
+      "endpoint": "https://api.github.com/repos/GloriousEggroll/proton-ge-custom/releases",
+      "type": "github",
+      "homepage": "https://github.com/GloriousEggroll/proton-ge-custom"
+    },
+    {
+      "id": "proton-cachyos",
+      "title": "Proton-CachyOS",
+      "description": "CachyOS Proton builds. Ships dedicated arm64 tarballs.",
+      "endpoint": "https://api.github.com/repos/CachyOS/proton-cachyos/releases",
+      "type": "github",
+      "homepage": "https://github.com/CachyOS/proton-cachyos"
+    },
+    {
+      "id": "proton-ge-rtsp",
+      "title": "Proton-GE RTSP",
+      "description": "Proton-GE with RTSP codec patches for VRChat.",
+      "endpoint": "https://api.github.com/repos/SpookySkeletons/proton-ge-rtsp/releases",
+      "type": "github",
+      "homepage": "https://github.com/SpookySkeletons/proton-ge-rtsp"
+    },
+    {
+      "id": "proton-em",
+      "title": "Proton-EM",
+      "description": "Etaash Mathamsetty Proton builds with FSR4 and Wayland tweaks.",
+      "endpoint": "https://api.github.com/repos/Etaash-mathamsetty/Proton/releases",
+      "type": "github",
+      "homepage": "https://github.com/Etaash-mathamsetty/Proton"
+    },
+    {
+      "id": "dw-proton",
+      "title": "DW-Proton",
+      "description": "Dawn Winery custom Proton fork.",
+      "endpoint": "https://dawn.wine/api/v1/repos/dawn-winery/dwproton/releases",
+      "type": "forgejo",
+      "homepage": "https://dawn.wine/dawn-winery/dwproton"
+    }
+  ]
+}

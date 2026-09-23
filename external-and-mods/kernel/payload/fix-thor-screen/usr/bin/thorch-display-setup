@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+export LC_ALL="${LC_ALL:-C.UTF-8}"
+export DISPLAY="${DISPLAY:-:0}"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=${XDG_RUNTIME_DIR}/bus}"
+if [[ -z "${WAYLAND_DISPLAY:-}" && -S "${XDG_RUNTIME_DIR}/wayland-0" ]]; then
+	export WAYLAND_DISPLAY=wayland-0
+fi
+
+kscreen_output_id() {
+	local connector="$1"
+	kscreen-doctor -o 2>/dev/null |
+		sed -E 's/\x1b\[[0-9;]*m//g' |
+		awk -v connector="${connector}" '$1 == "Output:" && $3 == connector {print $2; exit}'
+}
+
+if [[ -n "${WAYLAND_DISPLAY:-}" ]]; then
+	export QT_QPA_PLATFORM="${QT_QPA_PLATFORM:-wayland}"
+	export XDG_SESSION_TYPE="${XDG_SESSION_TYPE:-wayland}"
+	dsi_scale=2
+	dsi1_logical_x=170
+	dsi1_logical_y=540
+	dsi2="$(kscreen_output_id DSI-2 || true)"
+	dsi1="$(kscreen_output_id DSI-1 || true)"
+	if [[ -n "${dsi2}" && -n "${dsi1}" ]]; then
+		kscreen-doctor \
+			"output.${dsi2}.enable" "output.${dsi2}.rotation.right" "output.${dsi2}.position.0,0" "output.${dsi2}.scale.${dsi_scale}" "output.${dsi2}.priority.2" \
+			"output.${dsi1}.enable" "output.${dsi1}.rotation.right" "output.${dsi1}.position.${dsi1_logical_x},${dsi1_logical_y}" "output.${dsi1}.scale.${dsi_scale}" "output.${dsi1}.priority.1" || true
+	else
+		kscreen-doctor \
+			output.2.enable output.2.rotation.right output.2.position.0,0 "output.2.scale.${dsi_scale}" output.2.priority.2 \
+			output.1.enable output.1.rotation.right "output.1.position.${dsi1_logical_x},${dsi1_logical_y}" "output.1.scale.${dsi_scale}" output.1.priority.1 || true
+	fi
+	if [[ -f "${HOME}/.config/kwinoutputconfig.json" ]]; then
+		perl -0pi -e 's/"autoRotation": "InTabletMode"/"autoRotation": "Never"/g' "${HOME}/.config/kwinoutputconfig.json" || true
+	fi
+	command -v thorch-kwin-touch-map >/dev/null 2>&1 && thorch-kwin-touch-map || true
+	exit 0
+fi
+
+if command -v xrandr >/dev/null 2>&1; then
+	xrandr --output DSI-2 --mode 1080x1920 --rotate right --pos 0x0 \
+		--output DSI-1 --mode 1080x1240 --rotate right --pos 340x1080 --primary \
+		--output DP-1 --off || true
+	command -v thorch-kwin-touch-map >/dev/null 2>&1 && thorch-kwin-touch-map || true
+fi

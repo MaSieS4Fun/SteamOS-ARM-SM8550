@@ -1,0 +1,166 @@
+#!/bin/bash
+# Handheld SM8550 session (Odin 2 / Thor / Mini / Portal).
+# Replaces the Steam Frame OpenVR gamescope command line.
+
+# Create run directory file for startup and stats sockets
+#   shellcheck disable=SC2030
+tmpdir="$([[ -n ${XDG_RUNTIME_DIR+x} ]] && mktemp -p "$XDG_RUNTIME_DIR" -d -t gamescope.XXXXXXX)"
+stats="${tmpdir:+$tmpdir/stats.pipe}"
+#   shellcheck disable=SC2031
+if [[ -z $tmpdir || -z ${XDG_RUNTIME_DIR+x} ]]; then
+  echo >&2 "!! Failed to find run directory in which to create stats session sockets (is \$XDG_RUNTIME_DIR set?)"
+  exit 0
+fi
+
+export GAMESCOPE_STATS="$stats"
+mkfifo -- "$stats"
+
+linkname="gamescope-stats"
+#   shellcheck disable=SC2031
+sessionlink="${XDG_RUNTIME_DIR:+$XDG_RUNTIME_DIR/}${linkname}"
+lockfile="$sessionlink".lck
+exec 9>"$lockfile"
+if flock -n 9 && rm -f "$sessionlink" && ln -sf "$tmpdir" "$sessionlink"; then
+  echo >&2 "Claimed global gamescope stats session at \"$sessionlink\""
+else
+  echo >&2 "!! Failed to claim global gamescope stats session"
+fi
+
+export GAMESCOPE_READY_NOTIFY_SOCKET="$NOTIFY_SOCKET"
+unset NOTIFY_SOCKET
+
+if [[ -f /usr/lib/steamos/gamescope-cleanup ]]; then
+  # shellcheck disable=SC1091
+  source /usr/lib/steamos/gamescope-cleanup
+fi
+
+export XCURSOR_THEME="${XCURSOR_THEME:-steam}"
+# Stock Frame mangoapp (zink) coredumps on Turnip; do not spawn it.
+export GAMESCOPE_MANGOAPP_SOCKET_DISABLE=1
+export QT_IM_MODULE="${QT_IM_MODULE:-xim}"
+export GTK_IM_MODULE="${GTK_IM_MODULE:-xim}"
+export QT_QPA_PLATFORMTHEME="${QT_QPA_PLATFORMTHEME:-kde}"
+# Compositor is Wayland (GAMESCOPE_WAYLAND_DISPLAY). Do not stamp
+# XDG_SESSION_TYPE=wayland/x11 — Steam DisplayManager then leaves wayland: modeset.
+unset XDG_SESSION_TYPE || true
+export XDG_CURRENT_DESKTOP=gamescope
+export XDG_SESSION_DESKTOP=gamescope
+export DESKTOP_SESSION=gamescope
+export QT_QPA_PLATFORM=xcb
+export _STEAM_SETENV_MANAGER=1
+
+export SteamDeck=1
+export STEAM_MULTIPLE_XWAYLANDS=1
+export STEAM_GAMESCOPE_HDR_SUPPORTED=0
+export STEAM_ENABLE_VOLUME_HANDLER="${STEAM_ENABLE_VOLUME_HANDLER:-0}"
+export SRT_URLOPEN_PREFER_STEAM=1
+export ENABLE_GAMESCOPE_WSI=1
+export SDL_VIDEO_MINIMIZE_ON_FOCUS_LOSS=0
+export vk_xwayland_wait_ready=false
+export GAMESCOPE_DISABLE_ASYNC_FLIPS=1
+# MSM: KMS plane rotation is EINVAL on Adreno. Shader path is already in
+# DRMBackend.cpp; keep it forced so a 0° probe cannot skip it.
+export GAMESCOPE_USE_ROTATION_SHADER=1
+export GAMESCOPE_FORCE_INTERNAL="${GAMESCOPE_FORCE_INTERNAL:-1}"
+# Same physical size the working SM8550 session advertises (not connector mm).
+export GAMESCOPE_FAKE_OUTPUT_MM="${GAMESCOPE_FAKE_OUTPUT_MM:-177x100}"
+export STEAM_USE_MANGOAPP=0
+export STEAM_MANGOAPP_PRESETS_SUPPORTED=0
+export STEAM_MANGOAPP_HORIZONTAL_SUPPORTED=0
+export STEAM_DISABLE_MANGOAPP_ATOM_WORKAROUND=1
+export STEAM_GAMESCOPE_VRR_SUPPORTED=1
+export STEAM_GAMESCOPE_HAS_TEARING_SUPPORT=1
+export STEAM_GAMESCOPE_TEARING_SUPPORTED=1
+export STEAM_GAMESCOPE_DYNAMIC_FPSLIMITER=1
+export STEAM_GAMESCOPE_NIS_SUPPORTED=1
+export STEAM_GAMESCOPE_FANCY_SCALING_SUPPORT=1
+export STEAM_USE_DYNAMIC_VRS=1
+export STEAM_GAMESCOPE_COLOR_MANAGED=1
+export STEAM_ALLOW_DRIVE_UNMOUNT=1
+export STEAM_ALLOW_DRIVE_ADOPT=1
+
+export VK_ICD_FILENAMES="${VK_ICD_FILENAMES:-/usr/share/vulkan/icd.d/freedreno_icd.aarch64.json}"
+export VK_DRIVER_FILES="${VK_DRIVER_FILES:-$VK_ICD_FILENAMES}"
+export SDL_GAMECONTROLLERCONFIG_FILE="${SDL_GAMECONTROLLERCONFIG_FILE:-/etc/sdl2/qcom-gamecontrollerdb.txt}"
+export SDL_VIDEO_X11_DGAMOUSE=0
+
+# Native rsinput sticks: kernel reports ~±1408; emulators need ±740.
+if [[ -x /usr/lib/steamos/sm8550-fixpad ]]; then
+  /usr/lib/steamos/sm8550-fixpad apply 740 >/dev/null 2>&1 || true
+fi
+
+PANEL_W=1080
+PANEL_H=1920
+OUTPUT="${GAMESCOPE_OUTPUT:-}"
+if [[ -z "$OUTPUT" ]]; then
+  best_area=0
+  for card in /sys/class/drm/card*-DSI-* /sys/class/drm/card*-eDP-*; do
+    [[ -e "$card/status" ]] || continue
+    [[ "$(cat "$card/status" 2>/dev/null || true)" == connected ]] || continue
+    base="$(basename "$card")"
+    name="${base#*-}"
+    mode="$(head -1 "$card/modes" 2>/dev/null || true)"
+    if [[ "$mode" =~ ^([0-9]+)x([0-9]+) ]]; then
+      w="${BASH_REMATCH[1]}"
+      h="${BASH_REMATCH[2]}"
+      area=$((w * h))
+      if (( area > best_area )); then
+        best_area=$area
+        OUTPUT="$name"
+        PANEL_W="$w"
+        PANEL_H="$h"
+      fi
+    fi
+  done
+  OUTPUT="${OUTPUT:-DSI-1}"
+fi
+
+if [[ "$PANEL_H" -gt "$PANEL_W" ]]; then
+  W="${GAMESCOPE_WIDTH:-$PANEL_H}"
+  H="${GAMESCOPE_HEIGHT:-$PANEL_W}"
+else
+  W="${GAMESCOPE_WIDTH:-$PANEL_W}"
+  H="${GAMESCOPE_HEIGHT:-$PANEL_H}"
+fi
+REFRESH_HZ="${GAMESCOPE_REFRESH:-60}"
+
+GAMESCOPE_SESSION_TARGET="${GAMESCOPE_SESSION_TARGET:-gamescope-session.target}"
+WATCH_SERVICE=""
+
+# DRM backend = Wayland compositor + Xwayland. Steam paints on X11 (:0 / xcb).
+# --backend wayland/sdl would nest inside another compositor and drop the panel.
+GAMESCOPE_ARGS=(
+  --backend drm
+  --prefer-output "$OUTPUT"
+  --force-internal
+  --use-rotation-shader
+  --force-composition
+  --force-windows-fullscreen
+  --scaler fit
+  --filter linear
+  --steam
+  --xwayland-count 2
+  --adaptive-sync
+  --default-touch-mode 4
+  --hide-cursor-delay 3000
+  --framerate-limit 0
+  --max-scale 2
+  --output-width "$W"
+  --output-height "$H"
+  --nested-width "$W"
+  --nested-height "$H"
+  --nested-refresh "$REFRESH_HZ"
+  -T "$stats"
+)
+
+  if [[ -f /usr/share/holo/holo-cursor.png ]]; then
+  GAMESCOPE_ARGS+=(--cursor /usr/share/holo/holo-cursor.png --cursor-scale-height 720)
+fi
+
+if [[ "${GAMESCOPE_SESSION_TARGET}" != "gamescope-session.target" ]]; then
+  WATCH_SERVICE="steamvr-nested-desktop.service"
+fi
+
+echo >&2 "gamescope-session: output=$OUTPUT panel=${PANEL_W}x${PANEL_H} nested=${W}x${H}@${REFRESH_HZ}"
+
+exec gamescope "${GAMESCOPE_ARGS[@]}" -- /usr/lib/steamos/gamescope-onready ${WATCH_SERVICE:-}

@@ -1,0 +1,47 @@
+--- a/sound/soc/codecs/aw88166.c
++++ b/sound/soc/codecs/aw88166.c
+@@ -93,7 +93,7 @@ static int aw_dev_get_iis_status(struct aw_device *aw_dev)
+ 	if (ret)
+ 		return ret;
+ 	if ((reg_val & AW88166_BIT_PLL_CHECK) != AW88166_BIT_PLL_CHECK) {
+-		dev_err(aw_dev->dev, "check pll lock fail, reg_val:0x%04x", reg_val);
++		dev_dbg(aw_dev->dev, "check pll lock fail, reg_val:0x%04x", reg_val);
+ 		return -EINVAL;
+ 	}
+ 
+@@ -107,7 +107,7 @@ static int aw_dev_check_mode1_pll(struct aw_device *aw_dev)
+ 	for (i = 0; i < AW88166_DEV_SYSST_CHECK_MAX; i++) {
+ 		ret = aw_dev_get_iis_status(aw_dev);
+ 		if (ret) {
+-			dev_err(aw_dev->dev, "mode1 iis signal check error");
++			dev_dbg(aw_dev->dev, "mode1 iis signal check error");
+ 			usleep_range(AW88166_2000_US, AW88166_2000_US + 10);
+ 		} else {
+ 			return 0;
+@@ -141,7 +141,7 @@ static int aw_dev_check_mode2_pll(struct aw_device *aw_dev)
+ 	for (i = 0; i < AW88166_DEV_SYSST_CHECK_MAX; i++) {
+ 		ret = aw_dev_get_iis_status(aw_dev);
+ 		if (ret) {
+-			dev_err(aw_dev->dev, "mode2 iis signal check error");
++			dev_dbg(aw_dev->dev, "mode2 iis signal check error");
+ 			usleep_range(AW88166_2000_US, AW88166_2000_US + 10);
+ 		} else {
+ 			break;
+@@ -156,7 +156,7 @@ static int aw_dev_check_mode2_pll(struct aw_device *aw_dev)
+ 		for (i = 0; i < AW88166_DEV_SYSST_CHECK_MAX; i++) {
+ 			ret = aw_dev_get_iis_status(aw_dev);
+ 			if (ret) {
+-				dev_err(aw_dev->dev, "mode2 switch to mode1, iis signal check error");
++				dev_dbg(aw_dev->dev, "mode2 switch to mode1, iis signal check error");
+ 				usleep_range(AW88166_2000_US, AW88166_2000_US + 10);
+ 			} else {
+ 				break;
+@@ -176,7 +176,7 @@ static int aw_dev_check_syspll(struct aw_device *aw_dev)
+ 		dev_dbg(aw_dev->dev, "mode1 check iis failed try switch to mode2 check");
+ 		ret = aw_dev_check_mode2_pll(aw_dev);
+ 		if (ret) {
+-			dev_err(aw_dev->dev, "mode2 check iis failed");
++			dev_dbg(aw_dev->dev, "mode2 check iis failed");
+ 			return ret;
+ 		}
+ 	}

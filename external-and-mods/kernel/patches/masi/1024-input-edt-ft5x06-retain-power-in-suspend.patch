@@ -1,0 +1,56 @@
+diff -Naur a/Documentation/devicetree/bindings/input/touchscreen/edt-ft5x06.yaml b/Documentation/devicetree/bindings/input/touchscreen/edt-ft5x06.yaml
+--- a/Documentation/devicetree/bindings/input/touchscreen/edt-ft5x06.yaml
++++ b/Documentation/devicetree/bindings/input/touchscreen/edt-ft5x06.yaml
+@@ -59,6 +59,12 @@ properties:
+ 
+   wakeup-source: true
+ 
++  edt,retain-power-in-suspend:
++    type: boolean
++    description:
++      Keep the controller powered and skip suspend/resume power sequencing,
++      without marking the interrupt as a system wake source.
++
+   vcc-supply: true
+   iovcc-supply: true
+ 
+diff -Naur a/drivers/input/touchscreen/edt-ft5x06.c b/drivers/input/touchscreen/edt-ft5x06.c
+--- a/drivers/input/touchscreen/edt-ft5x06.c
++++ b/drivers/input/touchscreen/edt-ft5x06.c
+@@ -146,6 +146,7 @@ struct edt_ft5x06_ts_data {
+ 	unsigned int crc_errors;
+ 	unsigned int header_errors;
+ 	bool no_regmap_bulk_read;
++	bool retain_power_in_suspend;
+ };
+ 
+ struct edt_i2c_chip_data {
+@@ -1273,6 +1274,10 @@ static int edt_ft5x06_ts_probe(struct i2c_client *client)
+ 
+ 	tsdata->no_regmap_bulk_read =
+ 		device_property_read_bool(&client->dev, "no-regmap-bulk-read");
++	tsdata->retain_power_in_suspend =
++		device_property_read_bool(&client->dev,
++					  "edt,retain-power-in-suspend");
++
+ 	/*
+ 	 * Check which sleep modes we can support. Power-off requires the
+ 	 * reset-pin to ensure correct power-down/power-up behaviour. Start with
+@@ -1411,7 +1416,7 @@ static int edt_ft5x06_ts_suspend(struct device *dev)
+ 	struct gpio_desc *reset_gpio = tsdata->reset_gpio;
+ 	int ret;
+ 
+-	if (device_may_wakeup(dev))
++	if (device_may_wakeup(dev) || tsdata->retain_power_in_suspend)
+ 		return 0;
+ 
+ 	if (tsdata->suspend_mode == EDT_PMODE_NOT_SUPPORTED)
+@@ -1453,7 +1458,7 @@ static int edt_ft5x06_ts_resume(struct device *dev)
+ 	struct edt_ft5x06_ts_data *tsdata = i2c_get_clientdata(client);
+ 	int ret = 0;
+ 
+-	if (device_may_wakeup(dev))
++	if (device_may_wakeup(dev) || tsdata->retain_power_in_suspend)
+ 		return 0;
+ 
+ 	if (tsdata->suspend_mode == EDT_PMODE_NOT_SUPPORTED)

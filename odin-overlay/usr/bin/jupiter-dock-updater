@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# No Valve Dock on SM8550. Steam still probes this on Software Updates.
+#
+# Valve mock semantics (systemdockmanager):
+#   --check exit 0  → update available (Steam blocks on apply)
+#   --check exit 7  → up to date
+#   missing binary  → exit 127 → "Error de actualización"
+#   version < 0.13.15.106 → "unsupported firmware"
+set -uo pipefail
+FW_VER="0.13.15.124"
+
+for arg in "$@"; do
+  case "$arg" in
+    --check)
+      echo "FW Current: ${FW_VER}"
+      echo "FW Available: ${FW_VER}"
+      echo "FW up to date"
+      exit 7
+      ;;
+  esac
+done
+exit 0

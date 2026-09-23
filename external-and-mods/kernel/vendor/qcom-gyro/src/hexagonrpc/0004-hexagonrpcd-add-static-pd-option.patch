@@ -1,0 +1,102 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: suckbluefrog <suckbluefrog@proton.me>
+Date: Thu, 16 Jul 2026 14:00:00 +0000
+Subject: [PATCH] hexagonrpcd: add static PD option
+
+The ADSP audio daemon is a static protection domain rather than a root or
+sensor attachment. Add a command-line option that creates a named static
+PD through the upstream FastRPC UAPI while sharing the existing reverse
+listener implementation.
+---
+ hexagonrpcd/rpcd.c | 35 ++++++++++++++++++++++++++++++-----
+ 1 file changed, 30 insertions(+), 5 deletions(-)
+
+diff --git a/hexagonrpcd/rpcd.c b/hexagonrpcd/rpcd.c
+index 11055fd..7feec63 100644
+--- a/hexagonrpcd/rpcd.c
++++ b/hexagonrpcd/rpcd.c
+@@ -24,6 +24,7 @@
+ #include <libhexagonrpc/fastrpc.h>
+ #include <libhexagonrpc/interfaces/remotectl.def>
+ #include <misc/fastrpc.h>
++#include <stdint.h>
+ #include <unistd.h>
+ #include <signal.h>
+ #include <stdbool.h>
+@@ -145,9 +146,23 @@ static void print_usage(const char *argv0)
+ 	       "\t-f DEVICE\tFastRPC device node to attach to\n"
+ 	       "\t-p PROGRAM\tRun client program with shared file descriptor\n"
+ 	       "\t-R DIR\t\tRoot directory of served files (default: /usr/share/qcom/)\n"
+-	       "\t-s\t\tAttach to sensorspd\n");
++	       "\t-s\t\tAttach to sensorspd\n"
++	       "\t-S NAME\t\tCreate and attach to a static pd\n");
+ }
+ 
++#define STATIC_PD_HEAP_SIZE (12 * 1024 * 1024)
++
++static int create_static_pd(int fd, const char *name)
++{
++	struct fastrpc_init_create_static init = {
++		.namelen = strlen(name) + 1,
++		.memlen = STATIC_PD_HEAP_SIZE,
++		.name = (__u64)(uintptr_t)name,
++	};
++
++	return ioctl(fd, FASTRPC_IOCTL_INIT_CREATE_STATIC, &init);
++}
++
+ static int create_shell_pd(int fd, const char *create_shell)
+ {
+ 	char *buf;
+@@ -421,6 +436,7 @@ int main(int argc, char* argv[])
+ 	const char *device_dir = "/usr/share/qcom/";
+ 	const char *dsp = "";
+ 	const char *create_shell = NULL;
++	const char *static_pd = NULL;
+ 	const char *guessed_device_dir;
+ 	const char **progs;
+ 	pid_t *pids;
+@@ -443,7 +459,7 @@ int main(int argc, char* argv[])
+ 	if (guessed_device_dir != NULL)
+ 		device_dir = guessed_device_dir;
+ 
+-	while ((opt = getopt(argc, argv, "c:d:f:p:R:s")) != -1) {
++	while ((opt = getopt(argc, argv, "c:d:f:p:R:sS:")) != -1) {
+ 		switch (opt) {
+ 			case 'c':
+ 				create_shell = optarg;
+@@ -464,6 +480,9 @@ int main(int argc, char* argv[])
+ 			case 's':
+ 				attach_sns = true;
+ 				break;
++			case 'S':
++				static_pd = optarg;
++				break;
+ 			default:
+ 				print_usage(argv[0]);
+ 				goto err_free_pids;
+@@ -475,7 +494,10 @@ int main(int argc, char* argv[])
+ 		goto err_free_pids;
+ 	}
+ 
+-	printf("Starting %s (%s) on %s\n", argv[0], attach_sns? "INIT_ATTACH_SNS": "INIT_ATTACH", fastrpc_node);
++	printf("Starting %s (%s) on %s\n", argv[0],
++	       static_pd ? "INIT_CREATE_STATIC" :
++	       attach_sns ? "INIT_ATTACH_SNS" : "INIT_ATTACH",
++	       fastrpc_node);
+ 
+ 	fd = open(fastrpc_node, O_RDWR);
+ 	if (fd < 0) {
+@@ -483,7 +505,9 @@ int main(int argc, char* argv[])
+ 		goto err_free_pids;
+ 	}
+ 
+-	if (attach_sns)
++	if (static_pd != NULL)
++		ret = create_static_pd(fd, static_pd);
++	else if (attach_sns)
+ 		ret = ioctl(fd, FASTRPC_IOCTL_INIT_ATTACH_SNS, NULL);
+ 	else if (create_shell != NULL)
+ 		ret = create_shell_pd(fd, create_shell);
+-- 
+2.50.1

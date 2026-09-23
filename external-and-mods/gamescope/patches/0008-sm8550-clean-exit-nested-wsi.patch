@@ -1,0 +1,86 @@
+From: SM8550-Resolute <noreply@local>
+Subject: [PATCH] sm8550: clean nested shutdown + force WSI off for SDL nest
+
+--- a/src/steamcompmgr.cpp
++++ b/src/steamcompmgr.cpp
+@@ -6738,8 +6738,16 @@
+ [[noreturn]] static int
+ handle_io_error(Display *dpy)
+ {
+-	xwm_log.errorf("X11 I/O error! This is fatal. Aborting...");
+-	abort();
++	// Normal path when the primary child exits: we tear down Xwayland and
++	// Xlib raises an I/O error. abort() here pops Plasma's crash dialog even
++	// though the session was intentional. Xlib IO errors are unrecoverable —
++	// always exit quietly (never abort).
++	const bool shutting_down = !g_bRun.load( std::memory_order_relaxed );
++	if ( shutting_down )
++		xwm_log.infof( "X11 I/O error during shutdown — exiting cleanly" );
++	else
++		xwm_log.errorf( "X11 I/O error! This is fatal. Exiting..." );
++	_exit( shutting_down ? 0 : 1 );
+ }
+ 
+ static bool
+@@ -8244,8 +8252,19 @@
+ 			unsetenv( "LD_PRELOAD" );
+ 
+ 		unsetenv( "ENABLE_VKBASALT" );
+-		// Enable Gamescope WSI by default for nested.
+-		setenv( "ENABLE_GAMESCOPE_WSI", "1", 0 );
++		// Nested SDL/Vulkan swapchain (Plasma): Gamescope WSI cannot obtain
++		// Wayland objects after we unsetenv(WAYLAND_DISPLAY) in main.cpp.
++		// Force the implicit layer off (overwrite=1). DRM/embedded keeps WSI on.
++		if ( GetBackend() && GetBackend()->UsesVulkanSwapchain()
++			&& !getenv( "GAMESCOPE_FORCE_WAYLAND_DMABUF" ) )
++		{
++			setenv( "ENABLE_GAMESCOPE_WSI", "0", 1 );
++			setenv( "DISABLE_GAMESCOPE_WSI", "1", 1 );
++		}
++		else
++		{
++			setenv( "ENABLE_GAMESCOPE_WSI", "1", 0 );
++		}
+ 
+ 		// Unset this to avoid it leaking to Proton apps, etc.
+ 		unsetenv( "SDL_VIDEODRIVER" );
+
+--- a/src/Backends/SDLBackend.cpp
++++ b/src/Backends/SDLBackend.cpp
+@@ -133,6 +133,7 @@
+ 	{
+ 	public:
+ 		CSDLBackend();
++		virtual ~CSDLBackend();
+ 
+ 		/////////////
+ 		// IBackend
+@@ -398,6 +399,18 @@
+ 	{
+ 	}
+ 
++	CSDLBackend::~CSDLBackend()
++	{
++		// std::thread::~thread() calls std::terminate() if still joinable.
++		if ( m_SDLThread.joinable() )
++		{
++			SDL_Event event{};
++			event.type = SDL_QUIT;
++			SDL_PushEvent( &event );
++			m_SDLThread.join();
++		}
++	}
++
+ 	bool CSDLBackend::Init()
+ 	{
+ 		m_eSDLInit.wait( SDLInitState::SDLInit_Waiting );
+@@ -649,6 +662,9 @@
+ 
+ 			switch( event.type )
+ 			{
++				case SDL_QUIT:
++					return;
++
+ 				case SDL_CLIPBOARDUPDATE:
+ 				{
+ 					char *pClipBoard = SDL_GetClipboardText();

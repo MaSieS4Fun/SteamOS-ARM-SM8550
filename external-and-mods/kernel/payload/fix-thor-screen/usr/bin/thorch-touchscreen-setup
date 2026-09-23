@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+write_rule() {
+	local path="$1"
+	install -d -m 0755 "$(dirname "${path}")"
+	cat > "${path}" <<'EOF'
+# SPDX-License-Identifier: GPL-2.0
+# Thorch AYN Thor touch routing hints for KDE/KWin.
+#
+# The session mapper applies KWin's runtime outputName, matrix, and orientation
+# properties by stable /dev/input/by-path names. Keep udev hints minimal so
+# libinput does not pre-transform coordinates before KWin maps the devices.
+
+SUBSYSTEM=="input", KERNEL=="event*", ENV{ID_INPUT_TOUCHSCREEN}=="1", \
+ ENV{ID_PATH}=="platform-a90000.i2c", \
+ ENV{WL_OUTPUT}="DSI-2"
+
+SUBSYSTEM=="input", KERNEL=="event*", ENV{ID_INPUT_TOUCHSCREEN}=="1", \
+ ENV{ID_PATH}=="platform-98c000.i2c", \
+ ENV{WL_OUTPUT}="DSI-1"
+EOF
+	chmod 0644 "${path}"
+}
+
+write_rule /etc/udev/rules.d/99-thorch-touchscreen-calibration.rules
+write_rule /run/udev/rules.d/99-thorch-touchscreen-calibration.rules
+
+udevadm control --reload || true
+udevadm trigger --subsystem-match=input || true

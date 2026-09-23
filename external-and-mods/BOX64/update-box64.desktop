@@ -1,0 +1,11 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Box64
+Comment=Install/update or uninstall box64 (SD8G2) — use uninstall before switching to FEX
+Exec=konsole -e bash -c '/usr/bin/update-box64; echo; read -r -p "Press Enter to close..."'
+Icon=utilities-terminal
+Terminal=false
+Categories=System;Utility;X-ARM-Manager;
+Keywords=box64;x86;emulation;wine;arm;fex;uninstall;
+StartupNotify=true

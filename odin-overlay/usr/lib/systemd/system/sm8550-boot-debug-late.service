@@ -1,0 +1,13 @@
+[Unit]
+Description=SM8550 boot debug dump (after display manager)
+After=display-manager.service graphical.target
+Wants=sm8550-boot-debug.service
+
+[Service]
+Type=oneshot
+ExecStartPre=/bin/sleep 25
+ExecStart=/usr/lib/steamos/sm8550-boot-debug late
+RemainAfterExit=yes
+
+[Install]
+WantedBy=graphical.target

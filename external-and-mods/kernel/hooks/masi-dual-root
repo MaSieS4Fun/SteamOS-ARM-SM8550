@@ -1,0 +1,7 @@
+#!/bin/bash
+# Copy tools needed by scripts/init-premount/masi-dual-root into the initrd.
+[[ "$1" == "prereqs" ]] && exit 0
+
+. /usr/share/initramfs-tools/hook-functions
+
+copy_exec /bin/lsblk /bin/sed /bin/readlink 2>/dev/null || true

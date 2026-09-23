@@ -1,0 +1,48 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/ShadowBlip/InputPlumber/main/rootfs/usr/share/inputplumber/schema/composite_device_v1.json
+# SM8550 rsinput → virtual Steam Deck (deck-uhid) + keyboard (OSK haptic).
+#
+# Do not list USB/BT as ignore sources: deck-uhid is USB (VID 28de) and
+# matching it as a source restarts the composite in a loop (cursor, no Steam).
+# External HID is handled by sm8550-inputplumber-ext-hid (drop keyboard target).
+version: 1
+kind: CompositeDevice
+name: AYN Odin 2
+
+matches:
+  - udev:
+      sys_path: /sys/firmware/devicetree/base
+      attributes:
+        - name: model
+          value: AYN Odin 2
+  - udev:
+      sys_path: /sys/firmware/devicetree/base
+      attributes:
+        - name: model
+          value: AYN Odin 2 Mini
+  - udev:
+      sys_path: /sys/firmware/devicetree/base
+      attributes:
+        - name: model
+          value: AYN Odin 2 Portal
+  - udev:
+      sys_path: /sys/firmware/devicetree/base
+      attributes:
+        - name: model
+          value: AYN Thor
+
+single_source: false
+
+source_devices:
+  - group: gamepad
+    evdev:
+      phys_path: rsinput-gamepad/input0
+      handler: event*
+    capability_map_id: ayn_mcu
+    passthrough: false
+
+options:
+  auto_manage: true
+
+target_devices:
+  - deck-uhid
+  - keyboard
