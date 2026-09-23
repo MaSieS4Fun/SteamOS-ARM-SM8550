@@ -17,7 +17,6 @@ Full attribution: [`CREDITS.md`](CREDITS.md).
 ---
 
 > [!WARNING]
-> - AI has been used in this project.
 > - Before a public image is released, it is tested on hardware.
 > - Functionality tests have been carried out on the **AYN Odin 2**.
 > - Other devices below share the same SoC and ABL; some features may be
