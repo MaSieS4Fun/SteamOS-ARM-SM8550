@@ -35,7 +35,7 @@ card and boot Linux.
 | AYN Odin 2 Portal | Supported - Untested |
 | AYN Odin 2 Mini | Supported - Untested |
 | AYN Thor | Supported - Untested |
-| Retroid Pocket 6 | Supported - Untested |
+| Retroid Pocket 6 | Supported - Partial issues |
 | AYANEO Pocket EVO | Supported - Untested |
 | AYANEO Pocket ACE | Supported - Untested |
 | AYANEO Pocket DS | Supported - Untested |
