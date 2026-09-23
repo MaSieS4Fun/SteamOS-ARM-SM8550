@@ -32,8 +32,8 @@ card and boot Linux.
 | Device | Status |
 |--------|--------|
 | AYN Odin 2 | Supported - Tested | 
-| AYN Odin 2 Portal | Supported -Untested |
-| AYN Odin 2 Mini | Supported -Untested |
+| AYN Odin 2 Portal | Supported - Untested |
+| AYN Odin 2 Mini | Supported - Untested |
 | AYN Thor | Supported - Untested |
 | Retroid Pocket 6 | Supported - Untested |
 | AYANEO Pocket EVO | Supported - Untested |
