@@ -31,16 +31,16 @@ card and boot Linux.
 
 | Device | Status |
 |--------|--------|
-| AYN Odin 2 | Supported (primary test device) |
-| AYN Odin 2 Portal | Same SM8550 / ABL family |
-| AYN Odin 2 Mini | Same SM8550 / ABL family |
-| AYN Thor | Same SM8550 / ABL family (touch extras bundled) |
-| Retroid Pocket 6 | Kernel / ABL family |
-| AYANEO Pocket EVO | Kernel / ABL family |
-| AYANEO Pocket ACE | Kernel / ABL family |
-| AYANEO Pocket DS | Kernel / ABL family |
-| AYANEO Pocket DMG | Kernel / ABL family |
-| AYANEO Pocket S 2K | Kernel / ABL family |
+| AYN Odin 2 | Supported | Tested |
+| AYN Odin 2 Portal | Supported | Untested |
+| AYN Odin 2 Mini | Supported | Untested |
+| AYN Thor | Supported | Untested |
+| Retroid Pocket 6 | Supported | Untested |
+| AYANEO Pocket EVO | Supported | Untested |
+| AYANEO Pocket ACE | Supported | Untested |
+| AYANEO Pocket DS | Supported | Untested |
+| AYANEO Pocket DMG | Supported | Untested |
+| AYANEO Pocket S 2K | Supported | Untested |
 
 ---
 
