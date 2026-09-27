@@ -59,7 +59,14 @@ already_installed() {
       return 1
       ;;
     extra-cmake-modules)
-      [[ -f "$R/usr/share/ECM/cmake/ECMConfig.cmake" ]] && return 0
+      # Holo ships 6.1.0; kscreen/plasma-nm need >= 6.5 (see lib/ensure-ecm-rootfs.sh).
+      if [[ -f "$R/usr/share/ECM/cmake/ECMConfigVersion.cmake" ]]; then
+        local ecm_ver
+        ecm_ver="$(grep -m1 'set(PACKAGE_VERSION' "$R/usr/share/ECM/cmake/ECMConfigVersion.cmake" \
+          | sed -n 's/.*"\([^"]*\)".*/\1/p')"
+        [[ -n "$ecm_ver" && "$(printf '%s\n' '6.5.0' "$ecm_ver" | sort -V | head -1)" == "6.5.0" ]] \
+          && return 0
+      fi
       return 1
       ;;
     ark|kcalc|gwenview|okular|filelight|kate)
@@ -155,7 +162,8 @@ fi
 # Prefer SteamOS-built kate; skip Plasma-6.7 modules from ALARM.
 # plasma-nm 6.0.4 is already on Frame but networkmanager-qt was stripped —
 # without libKF6NetworkManagerQt the panel applet and kcm do nothing.
-WANT_STEAMOS=(kate networkmanager-qt modemmanager-qt extra-cmake-modules)
+# ECM >= 6.5 comes from scripts/lib/ensure-ecm-rootfs.sh (Holo only has 6.1.0).
+WANT_STEAMOS=(kate networkmanager-qt modemmanager-qt)
 WANT_GEAR=(ark kcalc gwenview okular filelight)
 WANT_OPTIONAL=(p7zip 7zip unrar unzip zip kdialog unarchiver lrzip yyjson fastfetch)
 

@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Gamescope scans out to DSI only, but Xwayland still exposes DP/HDMI RandR outputs
+# when a dock is plugged. Steam then moves the cursor (and sometimes the UI) to the
+# external monitor while nothing is painted there → mouse on Samsung, black panel.
+set +e
+
+[[ -n "${DISPLAY:-}" ]] || export DISPLAY=:0
+command -v xrandr >/dev/null 2>&1 || exit 0
+
+# Optional: use dock monitor instead of handheld panel (debug / desktop use).
+if [[ "${SM8550_DOCK_DISPLAY:-0}" == "1" ]]; then
+  exit 0
+fi
+
+xrandr -q 2>/dev/null | awk '/ connected/{print $1}' | while read -r out; do
+  case "$out" in
+    DP-*|HDMI-*|HDMI-A-*|DVI-*|VGA-*)
+      xrandr --output "$out" --off 2>/dev/null || true
+      ;;
+  esac
+done

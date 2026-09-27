@@ -1,0 +1,21 @@
+[Unit]
+Description=Decky PluginLoader for the Gamescope session
+PartOf=gamescope-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/lib/steamos/sm8550-plugin-loader /home/steamos/homebrew/services/PluginLoader
+Restart=on-failure
+RestartSec=5
+KillMode=control-group
+TimeoutStopSec=5
+FinalKillSignal=SIGKILL
+SendSIGKILL=yes
+Environment=UNPRIVILEGED_PATH=/home/steamos/homebrew
+Environment=PRIVILEGED_PATH=/home/steamos/homebrew
+Environment=LOG_LEVEL=INFO
+Environment=HOME=/home/steamos
+Environment=USER=steamos
+Environment=XDG_CONFIG_HOME=/home/steamos/.config
+Environment=XDG_DATA_HOME=/home/steamos/.local/share
+Environment=XDG_RUNTIME_DIR=/run/user/1000

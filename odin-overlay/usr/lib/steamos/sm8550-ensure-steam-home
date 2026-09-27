@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# Keep ~/.steam symlinks on runtime paths (/home/steamos/...).
+# Steam may rewrite them to absolute paths when HOME is wrong (e.g. SD mounted
+# on a dev PC) → on the handheld that breaks steamrt → black screen + cursor.
+set -euo pipefail
+
+HOME_DST="${1:-${HOME:-/home/steamos}}"
+STEAM_HOME="${HOME_DST}/.local/share/Steam"
+
+[[ -d "$STEAM_HOME" ]] || exit 0
+
+_steam_link() {
+  local runtime_target="$1"
+  local dest="$2"
+  local mount_check="${3:-}"
+  if [[ -n "$mount_check" && ! -e "$mount_check" ]]; then
+    return 0
+  fi
+  ln -sfn "$runtime_target" "$dest"
+}
+
+mkdir -p "${HOME_DST}/.steam"
+_steam_link /home/steamos/.local/share/Steam "${HOME_DST}/.steam/steam" "$STEAM_HOME"
+_steam_link /home/steamos/.local/share/Steam "${HOME_DST}/.steam/root" "$STEAM_HOME"
+_steam_link /home/steamos/.local/share/Steam/linux32 "${HOME_DST}/.steam/sdk32" \
+  "${STEAM_HOME}/linux32"
+_steam_link /home/steamos/.local/share/Steam/linux64 "${HOME_DST}/.steam/sdk64" \
+  "${STEAM_HOME}/linux64"
+_steam_link /home/steamos/.local/share/Steam/linuxarm64 "${HOME_DST}/.steam/sdkarm64" \
+  "${STEAM_HOME}/linuxarm64"
+_steam_link /home/steamos/.local/share/Steam/steamrtarm64 "${HOME_DST}/.steam/binarm64" \
+  "${STEAM_HOME}/steamrtarm64"
+_steam_link /home/steamos/.local/share/Steam/ubuntu12_32 "${HOME_DST}/.steam/bin32" \
+  "${STEAM_HOME}/ubuntu12_32"
+_steam_link /home/steamos/.local/share/Steam/ubuntu12_64 "${HOME_DST}/.steam/bin64" \
+  "${STEAM_HOME}/ubuntu12_64"
+
+exit 0

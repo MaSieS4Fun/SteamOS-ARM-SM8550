@@ -1,13 +1,13 @@
 #!/bin/bash
-# Notify systemd after DISPLAY / GAMESCOPE_WAYLAND_DISPLAY are published.
-# steam.service After=gamescope-session: if we notify first, Steam starts
-# without DISPLAY and exits 1 (health-check then wipes the client).
-#
-# Env matches the working SM8550 session: compositor Wayland via
-# GAMESCOPE_WAYLAND_DISPLAY; Steam Qt/CEF on Xwayland (DISPLAY + xcb).
-# Leave XDG_SESSION_TYPE unset — setting wayland or x11 breaks Steam DM.
+# Hybrid SM8550: sm8550-launch-steam sibling; no permanent mangoapp window.
 
 set +e
+
+if [[ -f /home/steamos/.config/sm8550-qam-debug ]]; then
+  mkdir -p /home/steamos/.local/share/qam-debug
+  echo "gamescope-onready $(date -Iseconds 2>/dev/null || date) uid=$(id -u)" \
+    >>/home/steamos/.local/share/qam-debug/gamescope-qam.log 2>/dev/null || true
+fi
 
 source /usr/lib/steamos/gamescope-env-list
 
@@ -29,7 +29,12 @@ unset XDG_SESSION_TYPE || true
 
 inherit=()
 for v in DISPLAY GAMESCOPE_WAYLAND_DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP \
-         XDG_RUNTIME_DIR QT_QPA_PLATFORM _STEAM_SETENV_MANAGER SteamDeck; do
+         XDG_RUNTIME_DIR _STEAM_SETENV_MANAGER SteamDeck \
+         "${gamescope_inherit_vars[@]}"; do
+  case "$v" in
+    WAYLAND_DISPLAY|XDG_SESSION_TYPE|QT_QPA_PLATFORM|MANGOHUD_CONFIGFILE|MANGOHUD_PRESETSFILE|MANGOHUD_CONFIG) continue ;;
+    QT_IM_MODULE|GTK_IM_MODULE|XMODIFIERS|IBUS_ENABLE_SYNC_MODE) continue ;;
+  esac
   if [[ -n "${!v:-}" ]]; then
     inherit+=("$v")
   fi
@@ -38,28 +43,67 @@ if ((${#inherit[@]})); then
   dbus-update-activation-environment "${inherit[@]}" >/dev/null 2>&1 || true
   systemctl --user import-environment "${inherit[@]}" >/dev/null 2>&1 || true
 fi
-systemctl --user set-environment \
-  "DISPLAY=${DISPLAY}" \
-  "GAMESCOPE_WAYLAND_DISPLAY=${GAMESCOPE_WAYLAND_DISPLAY:-gamescope-0}" \
-  "QT_QPA_PLATFORM=xcb" \
-  "XDG_CURRENT_DESKTOP=gamescope" \
-  "_STEAM_SETENV_MANAGER=1" >/dev/null 2>&1 || true
-systemctl --user unset-environment WAYLAND_DISPLAY XDG_SESSION_TYPE >/dev/null 2>&1 || true
+
+set_env=(
+  "DISPLAY=${DISPLAY}"
+  "GAMESCOPE_WAYLAND_DISPLAY=${GAMESCOPE_WAYLAND_DISPLAY:-gamescope-0}"
+  "XDG_CURRENT_DESKTOP=gamescope"
+  "_STEAM_SETENV_MANAGER=1"
+  "STEAM_USE_MANGOAPP=1"
+  "STEAM_MANGOAPP_PRESETS_SUPPORTED=1"
+  "STEAM_MANGOAPP_HORIZONTAL_SUPPORTED=1"
+  "STEAM_DISABLE_MANGOAPP_ATOM_WORKAROUND=1"
+)
+systemctl --user set-environment "${set_env[@]}" >/dev/null 2>&1 || true
+# Never import QT_QPA_PLATFORM=xcb into the user manager — Switch to Desktop
+# would start Plasma on xcb with no X server, then SDDM Relogin → Game Mode.
+systemctl --user unset-environment WAYLAND_DISPLAY XDG_SESSION_TYPE QT_QPA_PLATFORM \
+  QT_IM_MODULE GTK_IM_MODULE XMODIFIERS IBUS_ENABLE_SYNC_MODE \
+  MANGOHUD_CONFIGFILE MANGOHUD_PRESETSFILE MANGOHUD_CONFIG >/dev/null 2>&1 || true
 
 xhost + >/dev/null 2>&1 || true
 echo 'Xft.dpi: 144' | xrdb -merge >/dev/null 2>&1 || true
 
-# Game Mode does not always reach user default.target. Start the sink
-# before Steam so splash/UI audio has a speaker route.
 systemctl --user start pipewire.service pipewire-pulse.service wireplumber.service >/dev/null 2>&1 || true
 systemctl --user start sm8550-audio-pipewire.service sm8550-volume-keys.service >/dev/null 2>&1 || true
+
+# InputPlumber: deck-uhid + keyboard from 02-ayn-odin.yaml; USB/BT via udev 71 + ext-hid only.
 
 if [[ -n "${GAMESCOPE_READY_NOTIFY_SOCKET:-}" ]]; then
   export NOTIFY_SOCKET="$GAMESCOPE_READY_NOTIFY_SOCKET"
   systemd-notify --ready >/dev/null 2>&1 || true
 fi
 
-systemctl --user start steam.service >/dev/null 2>&1 || true
+# Mangoapp runs as Gamescope's external overlay. The SM8550 wrapper removes
+# STEAM_OVERLAY so it cannot displace Home/QAM, mirrors Steam's requested
+# preset, and keeps the HUD hidden unless a real game is focused.
+pkill -x mangoapp >/dev/null 2>&1 || true
+if [[ -x /usr/lib/steamos/sm8550-mangoapp ]]; then
+  /usr/lib/steamos/sm8550-mangoapp --supervisor >/dev/null 2>&1 &
+  /usr/lib/steamos/sm8550-mangoapp --watch-config >/dev/null 2>&1 &
+fi
+
+# Keep Decky and LSFG in their own user cgroup. PartOf=gamescope-session.target
+# stops the entire process tree before SteamOS changes to Plasma.
+if [[ -x /usr/lib/steamos/sm8550-plugin-loader \
+      && -x "${HOME}/homebrew/services/PluginLoader" ]]; then
+  systemctl --user restart sm8550-plugin-loader.service >/dev/null 2>&1 || true
+fi
+
+LAUNCH_STEAM=/usr/lib/steamos/sm8550-launch-steam
+if [[ -x "$LAUNCH_STEAM" ]]; then
+  "$LAUNCH_STEAM" \
+    -gamepadui \
+    -steamos3 \
+    -steampal \
+    -steamdeck \
+    -noverifyfiles \
+    -noshaders &
+fi
+
+if [[ -x /usr/lib/steamos/sm8550-steam-focus ]]; then
+  /usr/lib/steamos/sm8550-steam-focus >/dev/null 2>&1 &
+fi
 
 WATCH_SERVICE="${1:-}"
 if [[ -n "${WATCH_SERVICE}" && "${WATCH_SERVICE}" != "steam.service" ]]; then

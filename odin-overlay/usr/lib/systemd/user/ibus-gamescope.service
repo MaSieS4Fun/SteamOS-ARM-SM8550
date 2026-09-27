@@ -1,0 +1,8 @@
+[Unit]
+Description=IBus (disabled in SM8550 Game Mode)
+ConditionEnvironment=!XDG_CURRENT_DESKTOP=gamescope
+
+[Service]
+Type=simple
+ExecStart=/usr/lib/steamos/sm8550-ibus-daemon -r --panel=disable --emoji-extension=disable
+Slice=session.slice

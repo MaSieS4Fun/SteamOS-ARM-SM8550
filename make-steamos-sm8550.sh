@@ -14,8 +14,6 @@ R="${ROOT}/rootfs"
 MOD="${ROOT}/external-and-mods"
 OVL="${ROOT}/odin-overlay"
 KOUT="${MOD}/kernel/output/7.0.14-edge-sm8550"
-BOX64_SRC="${MOD}/BOX64/box64"
-BOX64_BUILD="${BOX64_SRC}/build"
 IMG="${STEAMOS_SM8550_IMG:-${ROOT}/steamos-sm8550.img}"
 MNT="${ROOT}/.image-mnt"
 LOOPDEV=""
@@ -35,7 +33,7 @@ fi
 
 SKIP_DOWNLOAD=0
 SKIP_APPLY=0
-SKIP_BOX64=0
+SKIP_BUILD=0
 IMAGE_ONLY=0
 
 log() { printf '==> %s\n' "$*"; }
@@ -59,11 +57,12 @@ Usage: $0 [options]
 
   --skip-download   Reuse existing official rootfs/ chunks
   --skip-apply      Do not re-run scripts/apply-odin-mods.sh
-  --skip-box64      Do not rebuild Box64
+  --skip-build      Do not recompile gamescope/MangoHud (use existing binaries)
   --image-only      Only pack the .img from the current rootfs
   --img PATH        Output image (default: ${IMG})
 
 Env: BOOT_MIB ROOT_MIB HOME_MIB STEAMOS_SM8550_IMG
+     SKIP_GAMESCOPE_BUILD=1 SKIP_MANGOHUD_BUILD=1  (same as --skip-build)
      empty ROOT_MIB/HOME_MIB = auto (tight pack; home grows on first boot)
 EOF
 }
@@ -72,8 +71,9 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --skip-download) SKIP_DOWNLOAD=1 ;;
     --skip-apply) SKIP_APPLY=1 ;;
-    --skip-box64) SKIP_BOX64=1 ;;
-    --image-only) IMAGE_ONLY=1; SKIP_DOWNLOAD=1; SKIP_APPLY=1; SKIP_BOX64=1 ;;
+    --skip-build) SKIP_BUILD=1 ;;
+    --skip-box64) log "Box64 is not used (Valve FEX only); --skip-box64 ignored" ;;
+    --image-only) IMAGE_ONLY=1; SKIP_DOWNLOAD=1; SKIP_APPLY=1; SKIP_BUILD=1 ;;
     --img) IMG="$2"; shift ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown option: $1" ;;
@@ -81,54 +81,89 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 
+unpack_rootfs_img() {
+  local img="$1" dest="$2"
+  local mnt="${ROOT}/.rootfs-unpack-mnt"
+  [[ -f "$img" ]] || die "missing ${img}"
+  mkdir -p "$dest" "$mnt"
+  log "Unpacking ${img} → ${dest}"
+  rm -rf "${dest:?}/"*
+  modprobe loop 2>/dev/null || true
+
+  if mount -o loop,compress=zstd,ro "$img" "$mnt" 2>/dev/null; then
+    log "Copying from loop-mounted btrfs (rsync; may take several minutes)"
+    # Dest is usually ext4 on the build host — skip btrfs xattrs (compression).
+    rsync -aH --numeric-ids \
+      --exclude='/dev/**' --exclude='/proc/**' --exclude='/sys/**' \
+      --exclude='/tmp/**' --exclude='/run/**' \
+      "${mnt}/" "${dest}/"
+    umount "$mnt" || die "failed to umount ${mnt}"
+  else
+    command -v btrfs >/dev/null || die "need loop mount or btrfs-progs to unpack ${img}"
+    log "Loop mount failed — falling back to btrfs restore (slow)"
+    btrfs restore -r 5 -S -m -i "$img" "$dest"
+  fi
+
+  [[ -x "${dest}/usr/bin/bash" ]] || die "unpack finished but ${dest}/usr/bin/bash missing"
+}
+
 ensure_official_rootfs() {
   if [[ -x "${R}/usr/bin/bash" ]]; then
     log "Official rootfs already extracted"
     return 0
   fi
-  [[ "$SKIP_DOWNLOAD" -eq 1 ]] && die "rootfs missing and --skip-download set"
-  [[ -x "${SCRIPTS}/extract_rootfs.py" ]] || die "missing scripts/extract_rootfs.py"
-  log "Assembling official rootfs.img from casync chunks"
-  python3 "${SCRIPTS}/extract_rootfs.py"
-  die "extract produced rootfs.img — unpack it to ${R} before re-running (btrfs restore)"
+
+  local caibx="${ROOT}/bundle/rootfs.img.caibx"
+  local img="${ROOT}/rootfs.img"
+  local chunks="${ROOT}/chunks"
+  local expected_sha256=""
+
+  if [[ -f "${ROOT}/bundle/manifest.raucm" ]]; then
+    expected_sha256="$(awk -F= '/^sha256=/{print $2; exit}' "${ROOT}/bundle/manifest.raucm")"
+  fi
+  expected_sha256="${expected_sha256:-5c53ff2ed7dc78f313a19fc9224aa07e7fb63271b811a4ada295441a0361e6a8}"
+
+  if [[ -f "$img" ]]; then
+    log "Reusing existing ${img}"
+  else
+    [[ "$SKIP_DOWNLOAD" -eq 1 ]] && die "rootfs missing, no ${img}, and --skip-download set"
+    [[ -f "$caibx" ]] || die "missing ${caibx} (official casync index)"
+    [[ -x "${SCRIPTS}/extract_rootfs.py" ]] || die "missing scripts/extract_rootfs.py"
+    log "Assembling official rootfs.img from casync chunks"
+    local -a extract_args=(
+      --caibx "$caibx"
+      --output "$img"
+      --workers "${EXTRACT_WORKERS:-8}"
+      --expected-sha256 "$expected_sha256"
+    )
+    if [[ -d "$chunks" ]]; then
+      log "Using local chunk cache ${chunks}"
+      extract_args+=(--chunks-dir "$chunks")
+    else
+      log "No ${chunks}/ — downloading chunks from Valve (slow)"
+    fi
+    python3 "${SCRIPTS}/extract_rootfs.py" "${extract_args[@]}"
+  fi
+
+  unpack_rootfs_img "$img" "$R"
+  log "Official rootfs ready at ${R}"
 }
 
 apply_mods() {
   [[ "$SKIP_APPLY" -eq 1 ]] && { log "Skipping apply-odin-mods"; return 0; }
   [[ -x "${SCRIPTS}/apply-odin-mods.sh" ]] || die "missing scripts/apply-odin-mods.sh"
-  log "Applying kernel / gamescope / MangoHud / Mesa / Decky / apps"
-  "${SCRIPTS}/apply-odin-mods.sh"
-}
-
-build_box64() {
-  if [[ -x "${R}/usr/local/bin/box64" ]] \
-      && ! strings "${R}/usr/local/bin/box64" | grep -q 'GLIBC_2\.43'; then
-    log "Box64 already in rootfs (Frame glibc) — skip rebuild"
-    return 0
+  if [[ "$SKIP_BUILD" -eq 1 ]]; then
+    log "Skipping vendor recompiles (--skip-build)"
+    export SKIP_GAMESCOPE_BUILD=1
+    export SKIP_MANGOHUD_BUILD=1
+    [[ -x "${SCRIPTS}/verify-sm8550-prereqs.sh" ]] || die "missing scripts/verify-sm8550-prereqs.sh"
+    "${SCRIPTS}/verify-sm8550-prereqs.sh"
+  else
+    log "Will compile gamescope + MangoHud from external-and-mods/ during apply-odin-mods"
   fi
-  if [[ "$SKIP_BOX64" -eq 1 ]]; then
-    die "Box64 missing or needs GLIBC_2.43, and --skip-box64 is set"
-  fi
-  if [[ ! -d "${BOX64_SRC}/.git" && ! -f "${BOX64_SRC}/CMakeLists.txt" ]]; then
-    log "Cloning ptitSeb/box64"
-    git clone --recursive --depth 1 https://github.com/ptitSeb/box64 "${BOX64_SRC}"
-  fi
-  log "Building Box64 inside Frame rootfs (glibc 2.39, SD8G2)"
-  "${SCRIPTS}/build-box64-in-rootfs.sh" "${R}"
-}
-
-install_box64_rootfs() {
-  [[ -x "${BOX64_BUILD}/box64" ]] || die "box64 binary missing — build first"
-  log "Installing Box64 into rootfs (no menu / no updater)"
-  DESTDIR="${R}" cmake --install "${BOX64_BUILD}"
-  rm -f "${R}/usr/local/share/applications/box64-configurator.desktop"
-  rm -f "${R}/usr/local/bin/box64-configurator"
-  rmdir "${R}/usr/local/share/applications" 2>/dev/null || true
-  ln -sfn /usr/local/bin/box64 "${R}/usr/bin/box64"
-  if [[ -f "${R}/etc/binfmt.d/box64.conf" ]]; then
-    mkdir -p "${R}/usr/lib/binfmt.d"
-    cp -a "${R}/etc/binfmt.d/box64.conf" "${R}/usr/lib/binfmt.d/box64.conf"
-  fi
+  log "Applying kernel / gamescope / MangoHud / Mesa / OOBE / Plasma / Decky / apps"
+  log "(includes install-oobe-update-fix + install-plasma-desktop-switch + ensure-steam-home)"
+  sudo_run "${SCRIPTS}/apply-odin-mods.sh"
 }
 
 prepare_runtime() {
@@ -158,10 +193,6 @@ prepare_runtime() {
     "${R}/usr/lib/systemd/system/sm8550-fixpad.service"
   ln -sfn /usr/lib/systemd/system/sm8550-fixpad.service \
     "${R}/etc/systemd/system/multi-user.target.wants/sm8550-fixpad.service"
-  install -D -m0644 "${OVL}/usr/lib/udev/rules.d/70-sm8550-gamepad.rules" \
-    "${R}/usr/lib/udev/rules.d/70-sm8550-gamepad.rules"
-  install -D -m0644 "${OVL}/usr/lib/udev/rules.d/70-sm8550-gamepad.rules" \
-    "${R}/lib/udev/rules.d/70-sm8550-gamepad.rules"
   install -D -m0644 "${OVL}/etc/sdl2/qcom-gamecontrollerdb.txt" \
     "${R}/etc/sdl2/qcom-gamecontrollerdb.txt"
   install -D -m0644 "${OVL}/usr/lib/environment.d/60-sm8550-gamepad.conf" \
@@ -174,10 +205,11 @@ prepare_runtime() {
     "${R}/home/steamos/LEEME-ODIN.txt"
   install -D -m0644 "${OVL}/home-steamos/README-ODIN.txt" \
     "${R}/home/steamos/README-ODIN.txt"
-  install -D -m0644 "${OVL}/etc/systemd/journald.conf.d/99-sm8550-persist.conf" \
-    "${R}/etc/systemd/journald.conf.d/99-sm8550-persist.conf"
-  mkdir -p "${R}/var/log/journal" \
-    "${R}/etc/systemd/system/graphical.target.wants"
+  # Production images use journald's volatile default. scripts/sd-debug-boot.sh
+  # can explicitly enable persistent logs for diagnostics.
+  rm -f "${R}/etc/systemd/journald.conf.d/99-sm8550-persist.conf"
+  rm -rf "${R}/var/log/journal"
+  mkdir -p "${R}/etc/systemd/system/graphical.target.wants"
   rm -f "${R}/usr/lib/steamos/sm8550-hide-console" \
         "${R}/usr/lib/systemd/system/sm8550-hide-console.service" \
         "${R}/lib/systemd/system/sm8550-hide-console.service" \
@@ -246,7 +278,8 @@ restore_image_suid() {
     usr/bin/pkexec usr/sbin/pkexec usr/bin/sudo usr/sbin/sudo \
     usr/lib/polkit-1/polkit-agent-helper-1 \
     usr/bin/su usr/bin/passwd usr/bin/newgrp usr/bin/chsh usr/bin/chfn \
-    usr/bin/gpasswd usr/bin/unix_chkpwd usr/bin/mount usr/bin/umount
+    usr/bin/gpasswd usr/bin/unix_chkpwd usr/bin/mount usr/bin/umount \
+    usr/bin/fusermount usr/bin/fusermount3
   do
     [[ -e "${dest}/${p}" ]] || continue
     sudo_run chown root:root "${dest}/${p}"
@@ -305,10 +338,10 @@ build_image() {
       --exclude=home --exclude=boot --exclude=proc --exclude=sys \
       --exclude=dev --exclude=tmp --exclude=run --exclude='.image-mnt' \
       "${R}" | awk '{print $1}')"
-    # ~500 MiB free after 1% reserved blocks + a little slack for first boot.
-    # 1.5 GiB free at pack: 500 MiB filled on first boot last time (root 100%).
-    ROOT_MIB=$((used_mib + 1536 + used_mib / 100 + 128))
-    log "root auto-size ${ROOT_MIB} MiB (rootfs ${used_mib} MiB, ~1.5 GiB free)"
+    # Reserved blocks (1%) + slack for first boot / pacman / Heroic updates.
+    # Target ~3 GiB free at pack (was 1.5 GiB; root filled too fast on device).
+    ROOT_MIB=$((used_mib + 3072 + used_mib / 100 + 128))
+    log "root auto-size ${ROOT_MIB} MiB (rootfs ${used_mib} MiB, ~3 GiB free)"
   fi
   if [[ "${AUTO_HOME}" -eq 1 ]]; then
     local home_mib
@@ -447,9 +480,6 @@ EOF
 if [[ "$IMAGE_ONLY" -eq 0 ]]; then
   ensure_official_rootfs
   apply_mods
-  build_box64
 fi
-# Always refresh runtime bits before packing
-[[ -x "${R}/usr/local/bin/box64" ]] || install_box64_rootfs
 prepare_runtime
 build_image

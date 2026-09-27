@@ -38,6 +38,23 @@ drm_dp() {
   return 1
 }
 
+# Game Mode keeps scanout on DSI (--force-internal). Switching PipeWire to the
+# DisplayPort sink on dock hotplug breaks audio (journal: Invalid argument) and
+# can destabilize Steam. Ignore dock for audio unless SM8550_AUDIO_FOLLOW_DOCK=1.
+game_mode_active() {
+  systemctl --user is-active --quiet gamescope-session.service 2>/dev/null \
+    || pgrep -x gamescope >/dev/null 2>&1
+}
+
+use_dock_audio() {
+  [[ "${SM8550_AUDIO_FOLLOW_DOCK:-0}" == "1" ]] && return 0
+  if game_mode_active && drm_dp; then
+    log "Game Mode: dock present — keeping speaker sink (set SM8550_AUDIO_FOLLOW_DOCK=1 to follow DP)"
+    return 1
+  fi
+  drm_dp
+}
+
 restore_speaker_mixers() {
   /usr/lib/steamos/sm8550-audio-setup >/dev/null 2>&1
   amixer -c 0 cset name='DISPLAY_PORT_RX_0 Audio Mixer MultiMedia2' 0 >/dev/null 2>&1
@@ -98,7 +115,7 @@ apply_policy() {
   [[ -n "$card" ]] || { log "no card"; return 1; }
   log "card=${card}"
 
-  if drm_dp; then
+  if use_dock_audio; then
     log "DRM DP/HDMI connected → HiFi DisplayPort"
     set_profile "$card" 'HiFi (DisplayPort, Speaker)' \
       || set_profile "$card" 'HiFi (Speaker, DisplayPort)' \

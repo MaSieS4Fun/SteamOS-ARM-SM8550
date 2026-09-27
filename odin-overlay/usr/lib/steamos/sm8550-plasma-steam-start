@@ -1,0 +1,28 @@
+#!/bin/bash
+# One Steam client for Plasma desktop OSK. Do not start a second instance if Game
+# Mode left one running — that triggers the "restart Steam?" recovery dialog.
+set -euo pipefail
+
+steam_root="${HOME:-/home/steamos}/.local/share/Steam"
+rm -f \
+  "${steam_root}/.crash" \
+  "${HOME}/.steam/steam.pid" \
+  "${steam_root}/steam.pid" \
+  2>/dev/null || true
+
+if pgrep -f 'steamrtarm64/steam' >/dev/null 2>&1 \
+  || pgrep -f '/usr/lib/steam/steam' >/dev/null 2>&1; then
+  exit 0
+fi
+
+export QT_QPA_PLATFORM=xcb
+export SteamDeck="${SteamDeck:-1}"
+export QT_IM_MODULE=steam
+export GTK_IM_MODULE=steam
+
+/usr/lib/steamos/sm8550-plasma-steam-pre
+export DISPLAY
+
+# Fork so systemd oneshot exits; Steam exit 42 (self-restart) must not respawn us.
+/usr/lib/steamos/sm8550-launch-steam -silent -nochatui &
+exit 0

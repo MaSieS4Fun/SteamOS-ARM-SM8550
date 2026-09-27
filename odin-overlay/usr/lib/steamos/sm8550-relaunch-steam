@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+# Kill Steam and relaunch inside the running gamescope session (same DISPLAY).
+# Used after OOBE OS-update apply. Display policy belongs to gamescope-session;
+# relaunching Steam must not rewrite a known-good config.vdf.
+set -u
+
+STEAM_HOME="${STEAM_HOME:-${HOME:-/home/steamos}}"
+
+if [[ "${HOME:-}" == *"/run/media/"* ]] || [[ "${STEAM_HOME}" == *"/run/media/"* ]]; then
+  echo "ERROR: sm8550-relaunch-steam refused (do not run against mounted SD on dev PC)" >&2
+  exit 1
+fi
+LOCK="${XDG_RUNTIME_DIR:-/run/user/1000}/sm8550-relaunch-steam.lock"
+LOG="${STEAM_HOME}/.local/share/Steam/logs/relaunch-steam.log"
+
+if [[ -f "$LOCK" ]]; then
+  exit 0
+fi
+mkdir -p "$(dirname "$LOCK")" 2>/dev/null || true
+touch "$LOCK" 2>/dev/null || true
+trap 'rm -f "$LOCK" 2>/dev/null || true' EXIT
+LAUNCH=/usr/lib/steamos/sm8550-launch-steam
+LAUNCH_ARGS=(
+  -gamepadui
+  -steamos3
+  -steampal
+  -steamdeck
+  -noverifyfiles
+  -noshaders
+)
+
+mkdir -p "$(dirname "$LOG")" 2>/dev/null || true
+
+export HOME="${HOME:-$STEAM_HOME}"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/1000}"
+export DISPLAY="${DISPLAY:-:0}"
+export QT_QPA_PLATFORM=xcb
+export SteamDeck=1
+export _STEAM_SETENV_MANAGER=1
+
+if [[ -z "${GAMESCOPE_WAYLAND_DISPLAY:-}" ]]; then
+  if [[ -S "${XDG_RUNTIME_DIR}/gamescope-0" ]]; then
+    export GAMESCOPE_WAYLAND_DISPLAY=gamescope-0
+  else
+    for sock in "${XDG_RUNTIME_DIR}"/gamescope-*; do
+      [[ -S "$sock" ]] || continue
+      export GAMESCOPE_WAYLAND_DISPLAY="$(basename "$sock")"
+      break
+    done
+  fi
+fi
+unset WAYLAND_DISPLAY XDG_SESSION_TYPE 2>/dev/null || true
+
+{
+  echo "=== $(date -Iseconds) sm8550-relaunch-steam ==="
+  echo "user=$(id -un) uid=$(id -u) home=$HOME"
+  echo "DISPLAY=$DISPLAY GAMESCOPE_WAYLAND_DISPLAY=${GAMESCOPE_WAYLAND_DISPLAY:-UNSET}"
+} >>"$LOG" 2>&1
+
+pkill -f 'steamrtarm64/steam' 2>/dev/null || true
+pkill -f '[s]teamwebhelper' 2>/dev/null || true
+sleep 1
+
+rm -f \
+  "${STEAM_HOME}/.steam/steam.pid" \
+  "${STEAM_HOME}/.steam/steam.token" \
+  "${STEAM_HOME}/.steampid" \
+  "${STEAM_HOME}/.local/share/Steam/steam.pid" \
+  "${STEAM_HOME}/.local/share/Steam/.steam.pid" \
+  "${STEAM_HOME}/.local/share/Steam/.crash" \
+  2>/dev/null || true
+
+RUNSTEAM="${STEAM_HOME}/.local/share/Steam/RUNSTEAM.sh"
+RELAUNCH_ENV=(
+  HOME="$HOME"
+  STEAM_HOME="$STEAM_HOME"
+  XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR"
+  DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=${XDG_RUNTIME_DIR}/bus}"
+  DISPLAY="$DISPLAY"
+  GAMESCOPE_WAYLAND_DISPLAY="${GAMESCOPE_WAYLAND_DISPLAY:-gamescope-0}"
+  QT_QPA_PLATFORM=xcb
+  SteamDeck=1
+  _STEAM_SETENV_MANAGER=1
+)
+
+if [[ -x "$LAUNCH" ]]; then
+  nohup env "${RELAUNCH_ENV[@]}" "$LAUNCH" "${LAUNCH_ARGS[@]}" >>"$LOG" 2>&1 &
+  echo "relaunch via sm8550-launch-steam pid=$!" >>"$LOG"
+elif [[ -x "$RUNSTEAM" ]]; then
+  nohup env "${RELAUNCH_ENV[@]}" bash "$RUNSTEAM" >>"$LOG" 2>&1 &
+  echo "relaunch via RUNSTEAM.sh pid=$!" >>"$LOG"
+else
+  echo "ERROR: missing $LAUNCH and $RUNSTEAM" >>"$LOG"
+  exit 1
+fi
+
+exit 0

@@ -31,7 +31,7 @@ card and boot Linux.
 
 | Device | Status |
 |--------|--------|
-| AYN Odin 2 | Supported - Tested | 
+| AYN Odin 2 | Supported - Tested |
 | AYN Odin 2 Portal | Supported - Untested |
 | AYN Odin 2 Mini | Supported - Untested |
 | AYN Thor | Supported - Untested |
@@ -60,17 +60,29 @@ then Steam login. The `home` partition grows to the rest of the card.
 - Kernel **7.0.14-edge-sm8550** from [SteamOS-Ubuntu](https://github.com/MaSieS4Fun/SteamOS-Ubuntu) / [MaSi-OS Kernel Updater](https://github.com/MaSieS4Fun/MaSi-OS-Kernel-Updater)
 - InputPlumber `deck-uhid` (Valve Steam Deck controller) + OSK haptics
 - USB / Bluetooth keyboard and mouse: virtual OSK keyboard is disabled
-  while they are connected, then restored on unplug
+  while they are connected, then restored on unplug; Game Mode IBus is isolated
+  to prevent duplicate or stuck keys
 - Decky plugins **SM8550-Power** and **SM8550-LED** (from SteamOS-Ubuntu;
   design based on [Hooandee](https://github.com/Hooandee))
 - Easy UFS Installer: internal install as `ROCKNIX` + `STORAGE` + `HOME`
 - Box64 (for Decky / x86_64 helpers), MangoHud, lsfg-vk, ARM-Manager apps
+- **Lutris** (open gaming platform) and **Heroic Games Launcher** (Epic/GOG/Amazon;
+  built for linux arm64 at image bake — no official ARM AppImage)
 
 # Decky Loader
 
-- Decky PluginLoader is x86_64. This image ships **Box64** so the loader
-  can run on aarch64.
-- Install Decky from the desktop shortcut when you want it.
+- Decky PluginLoader is x86_64. This image ships **Box64** (system binfmt) so
+  the loader can run on aarch64.
+- Decky runs as a user service tied to Game Mode. The installer removes the
+  legacy system-wide PluginLoader, so Decky survives reboot without leaving
+  LSFG processes behind during session changes.
+- **Valve FEX-Emu** (from Steam when forcing Proton x86_64) is for games only —
+  it must not replace Box64 globally. See [docs/DECKY-BOX64-FEX.md](docs/DECKY-BOX64-FEX.md).
+- Install Decky from ARM-Manager. If Decky stops after a Steam update:
+  `pkexec /usr/lib/steamos/sm8550-restore-decky-box64`
+- **Discover / Flathub:** if installs fail with `revokefs-fuse`, see
+  [docs/DISCOVER-FLATPAK.md](docs/DISCOVER-FLATPAK.md). Ghost “SteamOS”
+  updates in Discover are disabled (no atomupd on this image).
 - **SM8550-Power** (CPU/GPU profiles, fan, thermals) and **SM8550-LED**
   (controller RGB) are bundled from
   [SteamOS-Ubuntu](https://github.com/MaSieS4Fun/SteamOS-Ubuntu).
@@ -124,12 +136,24 @@ packed `.img` files (Valve terms; also too large for Git).
 | `external-and-mods/Decky/` | SM8550-Power and SM8550-LED (from SteamOS-Ubuntu) |
 | `external-and-mods/ufs-install/` | Easy UFS Installer |
 | `external-and-mods/system-fixes/` | LSFG-VK and AYN Thor touch extras |
+| `external-and-mods/mesa-sm8550/` | Turnip + OpenGL + wayland verified on Odin 2 |
 
 ## Building an image
 
-On an aarch64 Linux host, with the kernel already built to
-`external-and-mods/kernel/output/7.0.14-edge-sm8550/`, gamescope built,
-and a patched Turnip `libvulkan_freedreno.so` available:
+On an **aarch64** Linux host. The image always uses **project** binaries, not
+stock rootfs gamescope/Mesa:
+
+Detailed build architecture and the final fixes are documented in
+[`docs/BUILD-AND-FIXES.md`](docs/BUILD-AND-FIXES.md). Before publishing an
+image, follow [`docs/RELEASE-CHECKLIST.md`](docs/RELEASE-CHECKLIST.md).
+
+| Component | Source | Notes |
+|-----------|--------|-------|
+| gamescope | `external-and-mods/gamescope/build/` | SM8550 patches (backlight, rotation, QAM) |
+| MangoHud | `external-and-mods/MangoHud/` | Built in chroot during apply (kgsl temp/MHz) |
+| Mesa | `external-and-mods/mesa-sm8550/` | Turnip + OpenGL + wayland only; gallium stays stock |
+
+**Build the flashable image** (compiles gamescope + MangoHud automatically):
 
 ```bash
 sudo ./make-steamos-sm8550.sh
@@ -137,14 +161,59 @@ sudo ./make-steamos-sm8550.sh
 sudo ./make-steamos-sm8550.sh --skip-download
 ```
 
-`scripts/apply-odin-mods.sh` currently expects the Turnip library at
-`/home/steam/MESA-Drivers/26.2.3/libvulkan_freedreno.so`.
+During `apply-odin-mods.sh` you should see:
+
+1. `COMPILE gamescope` — `external-and-mods/gamescope` (meson + ninja)
+2. `COMPILE MangoHud` — `external-and-mods/MangoHud` (meson + ninja in rootfs chroot)
+3. Mesa SM8550 install + overlay copy
+
+To skip recompiles when binaries are already fresh:
+
+```bash
+sudo ./make-steamos-sm8550.sh --skip-download --skip-build
+```
+
+Manual preflight (optional, used with `--skip-build`):
+
+```bash
+./scripts/verify-sm8550-prereqs.sh
+```
+
+Checksums are stamped under `/usr/share/steamos-odin/gamescope-sm8550.txt` and
+`mesa-sm8550.txt`.
+
+**Display policy:** Game Mode defaults to the internal DSI panel
+(`GAMESCOPE_FORCE_INTERNAL=1`). To paint on a dock monitor (DP/HDMI) for
+debugging, enable `SM8550_DOCK_DISPLAY=1` (see
+`odin-overlay/usr/lib/systemd/user/gamescope-session.service.d/50-sm8550-dock-display.conf.example`).
+
+Mesa overrides replace only `libvulkan_freedreno.so`, the OpenGL stack
+(EGL/GLX/GBM/DRI), and the verified Wayland client; gallium stays stock.
+The rest of the official platform must remain coherent: Wayland 1.26,
+Vulkan loader 1.4.309, and LLVM 19.1. Do **not** use full chroot gallium,
+fex-mesa OpenGL, or generic Arch platform packages.
+
+> [!CAUTION]
+> Never set `HOLO_PKG_ALLOW_PLATFORM_REPLACE=1` for a production image.
+> Replacing Mesa, Wayland, Vulkan, LLVM, systemd, or GLVND while installing
+> Lutris breaks Gamescope and can make Plasma return directly to Game Mode.
 
 The official Frame/Deckard rootfs is reconstructed with
 `scripts/extract_rootfs.py` (casync). Do not copy random host Ubuntu
 binaries into that rootfs (SteamOS glibc is older).
 
 Packed `home` is sized tightly; it expands to the card on first boot.
+
+**Lutris** and **Heroic** install during `install-vendor-apps.sh` (needs
+network). Lutris is installed from the Arch Linux ARM `noarch` package with
+the platform stack protected; it is not compiled. Heroic is compiled on the
+build host (aarch64, Node 22 + pnpm 10; can take 10–20 minutes). To skip
+either step:
+
+```bash
+sudo SKIP_HEROIC=1 ./make-steamos-sm8550.sh --skip-download
+sudo SKIP_LUTRIS=1 SKIP_HEROIC=1 ./make-steamos-sm8550.sh --skip-download
+```
 
 # Relationship to SteamOS-Ubuntu
 

@@ -1,0 +1,18 @@
+[Unit]
+Description=Gamescope handheld session
+Before=graphical-session.target
+PartOf=graphical-session.target
+Wants=graphical-session-pre.target
+After=graphical-session-pre.target
+RefuseManualStart=yes
+Before=xdg-desktop-portal.service
+
+[Service]
+Slice=session.slice
+TimeoutStartSec=120
+TimeoutStopSec=15
+ExecStart=/usr/lib/steamos/gamescope-session
+Type=notify
+NotifyAccess=all
+Environment=SRT_LOG_TO_JOURNAL=1
+KillMode=mixed

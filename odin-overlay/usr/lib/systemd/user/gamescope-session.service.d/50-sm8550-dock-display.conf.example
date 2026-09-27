@@ -1,0 +1,13 @@
+# Copy to 50-sm8550-dock-display.conf to send gamescope scanout to the dock
+# monitor (DP/HDMI) instead of the internal DSI panel. Useful when the panel
+# is black but you need to see Steam on an external display.
+#
+#   cp .../50-sm8550-dock-display.conf.example \
+#      ~/.config/systemd/user/gamescope-session.service.d/50-sm8550-dock-display.conf
+#   systemctl --user daemon-reload
+#   systemctl --user restart gamescope-session.service
+#
+[Service]
+Environment=SM8550_DOCK_DISPLAY=1
+Environment=GAMESCOPE_FORCE_INTERNAL=0
+Environment=GAMESCOPE_ALLOW_HDMI=1

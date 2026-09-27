@@ -1,0 +1,12 @@
+[Unit]
+Description=Gamescope handheld session
+Requires=graphical-session.target
+BindsTo=graphical-session.target
+After=graphical-session.target
+PropagatesStopTo=graphical-session.target
+
+Requires=gamescope-session.service
+BindsTo=gamescope-session.service
+
+Wants=steam-notif-daemon.service
+Wants=sm8550-audio-pipewire.service

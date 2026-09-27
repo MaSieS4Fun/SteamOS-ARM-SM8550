@@ -1,19 +1,24 @@
 #!/usr/bin/env bash
-# Steam Gamepad UI OS-update hook. This image has no RAUC/atomupd payload.
+# Steam Gamepad UI OS-update hook. No RAUC/atomupd on this image.
 #
-#   --supports-duplicate-detection  → 0
-#   --mark-oobe-only                → stamp CompletedOOBE, exit 0
-#   check                           → 7 (up to date)
-#   apply (first OOBE)              → 0 + stamp + restart steam.service
-#   apply (again / after login)     → 7
+#   --supports-duplicate-detection (alone) → 0
+#   --enable-duplicate-detection is ignored; check must still exit 7 (up to date)
+#   check → 7 (up to date) — also when combined with --enable-duplicate-detection
+#   apply (OOBE, once) → 0 + mark OOBE + relaunch Steam in gamescope
+#   apply (after login or again) → 7
 set -uo pipefail
 
 STEAM_HOME="${STEAM_HOME:-/home/steamos}"
+LOG="${STEAM_HOME}/.local/share/Steam/logs/steamos-update.log"
+mkdir -p "$(dirname "$LOG")" 2>/dev/null || true
+printf '%s steamos-update %s\n' "$(date -Iseconds 2>/dev/null || date)" "$*" >>"$LOG" 2>/dev/null || true
 LOGINUSERS="${STEAM_HOME}/.local/share/Steam/config/loginusers.vdf"
 MARKER=/var/lib/steamos-sm8550/oobe-os-update-acked
 USER_MARKER="${STEAM_HOME}/.local/share/Steam/.oobe-os-update-acked"
 REG_STEAM="${STEAM_HOME}/.steam/registry.vdf"
 REG_LOCAL="${STEAM_HOME}/.local/share/Steam/registry.vdf"
+RELAUNCH=/usr/lib/steamos/sm8550-relaunch-steam
+DONE="${STEAM_HOME}/.local/share/Steam/.oobe-relaunch-done"
 
 mark_oobe_complete() {
   python3 - "$@" <<'PY' 2>/dev/null || true
@@ -87,20 +92,22 @@ for p in sys.argv[1:]:
 PY
 }
 
-for arg in "$@"; do
-  case "$arg" in
-    --supports-duplicate-detection) exit 0 ;;
-    --mark-oobe-only)
-      mark_oobe_complete "$REG_STEAM" "$REG_LOCAL"
-      exit 0
-      ;;
-  esac
-done
+if [[ $# -eq 1 && "$1" == "--supports-duplicate-detection" ]]; then
+  exit 0
+fi
+
+if [[ $# -eq 1 && "$1" == "--mark-oobe-only" ]]; then
+  mark_oobe_complete "$REG_STEAM" "$REG_LOCAL"
+  exit 0
+fi
 
 check=0
+apply=0
 for arg in "$@"; do
   case "$arg" in
+    --supports-duplicate-detection|--enable-duplicate-detection|--disable-duplicate-detection) ;;
     check) check=1 ;;
+    apply) apply=1 ;;
   esac
 done
 
@@ -113,40 +120,56 @@ if [[ ! -f "$LOGINUSERS" ]] || ! grep -qs '"AccountName"' "$LOGINUSERS"; then
   oobe=1
 fi
 
+# YieldingApplyUpdateOS on holo often runs only:
+#   steamos-update --enable-duplicate-detection
+# (no "apply" argv). That used to exit 0 without relaunch → OOBE spinner forever.
+if [[ "$apply" -eq 0 && "$check" -eq 0 ]]; then
+  enable_dd=0
+  for arg in "$@"; do
+    [[ "$arg" == "--enable-duplicate-detection" ]] && enable_dd=1
+  done
+  if [[ "$enable_dd" -eq 1 && "$oobe" -eq 1 && ! -f "$DONE" ]]; then
+    apply=1
+  fi
+fi
+
+if [[ "$apply" -eq 0 ]]; then
+  exit 0
+fi
+
 if [[ "$oobe" -eq 0 ]]; then
   exit 7
 fi
 
-mkdir -p /var/lib/steamos-sm8550 2>/dev/null || true
-mkdir -p "${STEAM_HOME}/.local/share/Steam" 2>/dev/null || true
-mark_oobe_complete "$REG_STEAM" "$REG_LOCAL"
-
-# Already told Steam this apply succeeded once. A second exit 0 keeps the
-# "calculando el tiempo restante" UI up until a forced power-off.
-if [[ -f "$MARKER" || -f "$USER_MARKER" ]]; then
+# Already forced the post-update Steam relaunch — further apply must not
+# look like a failed OS update (exit 7 during apply = retry loop).
+if [[ -f "$DONE" ]]; then
   exit 7
 fi
 
-touch "$MARKER" 2>/dev/null || true
-touch "$USER_MARKER" 2>/dev/null || true
+mkdir -p /var/lib/steamos-sm8550 "${STEAM_HOME}/.local/share/Steam" 2>/dev/null || true
+touch "$MARKER" "$USER_MARKER" 2>/dev/null || true
+mark_oobe_complete "$REG_STEAM" "$REG_LOCAL"
 
-# Steam calls this as user steamos (no pkexec). A system unit start fails,
-# and a background `&` dies with the helper. Delay 2s so APPLY 0 is seen
-# first, then restart steam.service — pkill + Restart=on-failure stays dead.
-restart_steam_after_oobe() {
-  local helper=/usr/lib/steamos/sm8550-oobe-restart-steam
-  [[ -x "$helper" ]] || return 0
-  if [[ "$(id -u)" -eq 0 ]]; then
-    systemctl start --no-block sm8550-oobe-restart-steam.service 2>/dev/null && return 0
-    systemd-run --collect --on-active=2s --uid=steamos --unit=sm8550-oobe-restart-steam-run \
-      "$helper" >/dev/null 2>&1 && return 0
+# Apply "succeeds", then kill+relaunch Steam in the same gamescope session.
+# Run relaunch immediately (no sleep, no background): user must not stay on
+# the OOBE update spinner or mash buttons while a delayed job races the UI.
+mark_oobe_complete "$REG_STEAM" "$REG_LOCAL"
+touch "$DONE" 2>/dev/null || true
+if [[ -x "$RELAUNCH" ]]; then
+  STEAM_HOME="$STEAM_HOME" HOME="$STEAM_HOME" \
+    DISPLAY="${DISPLAY:-:0}" \
+    XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/1000}" \
+    GAMESCOPE_WAYLAND_DISPLAY="${GAMESCOPE_WAYLAND_DISPLAY:-gamescope-0}" \
+    DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=${XDG_RUNTIME_DIR:-/run/user/1000}/bus}" \
+    "$RELAUNCH"
+else
+  helper=/usr/lib/steamos/sm8550-oobe-restart-steam
+  if [[ -x "$helper" ]]; then
+    STEAM_HOME="$STEAM_HOME" HOME="$STEAM_HOME" "$helper"
+  else
+    pkill -f 'steamrtarm64/steam' 2>/dev/null || true
   fi
-  systemd-run --user --collect --on-active=2s --unit=sm8550-oobe-restart-steam-run \
-    "$helper" >/dev/null 2>&1 && return 0
-  # Ignore SIGHUP when Steam's helper parent exits.
-  nohup bash -c "sleep 2; exec '$helper'" >/dev/null 2>&1 &
-  disown $! 2>/dev/null || true
-}
+fi
 
-restart_steam_after_oobe
 exit 0

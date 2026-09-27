@@ -1,0 +1,6 @@
+#!/bin/bash
+# Sourceable env for flatpak revokefs (Discover + CLI + system helper).
+# revokefs unmount runs in the USER flatpak process — not only in the helper.
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+export FUSERMOUNT3="/usr/bin/fusermount3"
+export FUSERMOUNT="/usr/bin/fusermount"

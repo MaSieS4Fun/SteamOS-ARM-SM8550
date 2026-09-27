@@ -17,4 +17,4 @@ variant = "Portal"
 friendly_name = "AYN Odin 2 Portal"
 
 [inputplumber]
-target_devices = ["deck-uhid"]
+target_devices = ["deck-uhid", "keyboard"]

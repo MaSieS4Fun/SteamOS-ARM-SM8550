@@ -1,0 +1,14 @@
+#!/bin/bash
+# Game Mode must not run IBus. The stock D-Bus service starts
+# `ibus-daemon --xim` which delivers every USB/OSK key twice.
+real=/usr/bin/ibus-daemon.real
+[[ -x "$real" ]] || real=/usr/lib/steamos/ibus-daemon.real
+
+desk="${XDG_CURRENT_DESKTOP:-}${XDG_SESSION_DESKTOP:-}"
+if [[ "${desk,,}" == *gamescope* ]]; then
+  exit 0
+fi
+if [[ -x "$real" ]]; then
+  exec "$real" "$@"
+fi
+exit 0

@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=IBus
+Comment=Input method framework daemon
+OnlyShowIn=KDE
+Type=Application
+Exec=ibus-daemon --panel=/usr/lib/kimpanel-ibus-panel

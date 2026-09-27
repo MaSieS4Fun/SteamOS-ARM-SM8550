@@ -1,0 +1,41 @@
+#!/bin/bash
+# Preserve SteamOS Manager's temporary SDDM choice if another cleanup races it.
+set -euo pipefail
+
+DIR="${SM8550_SDDM_CONF_DIR:-/etc/sddm.conf.d}"
+OUT="$DIR/zzz-sm8550-session-override.conf"
+SESSION_USER="${SM8550_SESSION_USER:-steamos}"
+session=
+
+for file in \
+  "$DIR/zzt-steamos-temp-login.conf" \
+  "$DIR/zzt-holo-temp-login.conf"; do
+  [[ -r "$file" ]] || continue
+  value="$(sed -n 's/^[[:space:]]*Session[[:space:]]*=[[:space:]]*//p' "$file" | tail -n1)"
+  case "$value" in
+    plasma.desktop|plasmawayland.desktop)
+      session=plasma.desktop
+      break
+      ;;
+    gamescope-wayland.desktop)
+      session=gamescope-wayland.desktop
+      break
+      ;;
+  esac
+done
+
+[[ -n "$session" ]] || exit 0
+
+tmp="$(mktemp /run/sm8550-sddm-session.XXXXXX)"
+trap 'rm -f "$tmp"' EXIT
+cat >"$tmp" <<EOF
+[Autologin]
+Relogin=true
+Session=$session
+User=steamos
+EOF
+
+if [[ ! -r "$OUT" ]] || ! cmp -s "$tmp" "$OUT"; then
+  install -o "$SESSION_USER" -g "$SESSION_USER" -m0644 "$tmp" "$OUT"
+  logger -t sm8550-session "preserved SDDM session: $session"
+fi

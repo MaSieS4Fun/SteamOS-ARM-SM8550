@@ -1,0 +1,7 @@
+c9fa324dd85714a0be9cce35c9457711a735a99e52543c374147ceb8e305856c  turnip-working/libvulkan_freedreno.so
+e53003030042c8b7c5ddbbfc6d062a99f96267c3f90309a23c60f18e102bcb17  opengl-working/libEGL_mesa.so.0.0.0
+e5b76ed6224e888a15a07b262db7ede3fb88088244fac440d83bece03fc2d391  opengl-working/libGLX_mesa.so.0.0.0
+afffd86ddf1084fad4f5c69c96396b412739702286c6a350d45b2afcd830b07b  opengl-working/libgbm.so.1.0.0
+03ab6640c234c85cb5ad89452d70f9ee9735e6da7b28c02c42d8c3f7893071ae  opengl-working/gbm/dri_gbm.so
+fc5877ee50334843fbd8134a6ef6e60caa3de6ac6f21536226c5d498f4269e00  opengl-working/dri/libdril_dri.so
+e6db268b9527a1278ddd831787d8e0e3b6bcb77d96f8ae6420997e38f092fa06  wayland/libwayland-client.so.0.26.0

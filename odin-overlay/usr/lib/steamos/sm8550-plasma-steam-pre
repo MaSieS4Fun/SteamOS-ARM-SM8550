@@ -1,0 +1,15 @@
+#!/bin/bash
+# Wait for kwin Xwayland before starting Steam (Steam client is X11/xcb).
+set -u
+
+for _ in $(seq 1 150); do
+  for sock in /tmp/.X11-unix/X*; do
+    [[ -e "$sock" ]] || continue
+    n="${sock##*/X}"
+    export DISPLAY=":${n}"
+    exit 0
+  done
+  sleep 0.2
+done
+echo "sm8550-plasma-steam-pre: no Xwayland DISPLAY" >&2
+exit 1

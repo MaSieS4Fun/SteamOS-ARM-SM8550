@@ -1,0 +1,12 @@
+[Unit]
+Description=Remove global FEX binfmt (Box64 is the system handler)
+After=local-fs.target
+Before=display-manager.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/lib/steamos/sm8550-fex-binfmt
+
+[Install]
+WantedBy=multi-user.target

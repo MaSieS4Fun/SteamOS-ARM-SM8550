@@ -3,6 +3,9 @@
 # Reference: SteamOS-Ubuntu install-vendor-arm-manager.sh (no Ubuntu files copied).
 #
 # Usage: install-vendor-apps.sh [rootfs]
+#
+# Skip optional steps:
+#   SKIP_LUTRIS=1 SKIP_HEROIC=1
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -203,6 +206,32 @@ install -m 0644 "$OVL/usr/share/applications/steam-rom-manager.desktop" \
   "$apps/steam-rom-manager.desktop"
 rm -f "$HOME_DST/Desktop/Steam ROM Manager.desktop"
 
+# ── Update Box64 (ARM-Manager; binary built on device or at image apply) ────
+log "Update Box64 → /usr/bin/update-box64"
+install -m 0755 "${MOD}/BOX64/update-box64" "$bin/update-box64"
+if [[ -f "${MOD}/BOX64/install_manifest.txt" ]]; then
+  mkdir -p "$R/usr/local/share/box64"
+  grep -v 'box64-configurator\.desktop' "${MOD}/BOX64/install_manifest.txt" \
+    >"$R/usr/local/share/box64/install_manifest.txt"
+fi
+if [[ -f "${MOD}/BOX64/update-box64.desktop" ]]; then
+  install -m 0644 "${MOD}/BOX64/update-box64.desktop" "$apps/update-box64.desktop"
+else
+  cat >"$apps/update-box64.desktop" <<'EOF'
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Box64
+Comment=Install/update or uninstall box64 (SD8G2) for Decky and system x86_64
+Exec=konsole -e bash -c '/usr/bin/update-box64; echo; read -r -p "Press Enter to close..."'
+Icon=utilities-terminal
+Terminal=false
+Categories=System;Utility;X-ARM-Manager;
+Keywords=box64;x86;emulation;decky;arm;
+StartupNotify=true
+EOF
+fi
+
 # ── Decky in ARM-Manager (keep installer, drop forced desktop copy later) ───
 if [[ -f "${MOD}/Decky/decky_installer.desktop" ]]; then
   install -m 0644 "${MOD}/Decky/decky_installer.desktop" "$apps/install-decky.desktop"
@@ -240,34 +269,71 @@ install -m 0644 "$OVL/etc/xdg/kwinoutputconfig.json" \
 if [[ -f "$R/etc/xdg/kwinrc" ]]; then
   if grep -q '^\[Xwayland\]' "$R/etc/xdg/kwinrc"; then
     if grep -q '^Scale=' "$R/etc/xdg/kwinrc"; then
-      sed -i 's/^Scale=.*/Scale=1.25/' "$R/etc/xdg/kwinrc"
+      sed -i 's/^Scale=.*/Scale=1.5/' "$R/etc/xdg/kwinrc"
     else
-      sed -i '/^\[Xwayland\]/a Scale=1.25' "$R/etc/xdg/kwinrc"
+      sed -i '/^\[Xwayland\]/a Scale=1.5' "$R/etc/xdg/kwinrc"
     fi
   else
-    printf '\n[Xwayland]\nScale=1.25\n' >>"$R/etc/xdg/kwinrc"
+    printf '\n[Xwayland]\nScale=1.5\n' >>"$R/etc/xdg/kwinrc"
   fi
 fi
 if [[ -f "$R/etc/xdg/kdeglobals" ]] && ! grep -q '^\[KScreen\]' "$R/etc/xdg/kdeglobals"; then
-  printf '\n[KScreen]\nScaleFactor=1.25\nScreenScaleFactors=DSI-1=1.25\n' >>"$R/etc/xdg/kdeglobals"
+  printf '\n[KScreen]\nScaleFactor=1.5\nScreenScaleFactors=DSI-1=1.5\n' >>"$R/etc/xdg/kdeglobals"
 fi
-mkdir -p "$HOME_DST/.config"
-cat >"$HOME_DST/.config/kwinrc" <<'EOF'
+mkdir -p "$HOME_DST/.config" "$R/etc/xdg" "$R/etc/skel/.config"
+if [[ -f "$OVL/etc/xdg/kwinrc" ]]; then
+  install -m 0644 "$OVL/etc/xdg/kwinrc" "$R/etc/xdg/kwinrc"
+  install -m 0644 "$OVL/etc/xdg/kwinrc" "$HOME_DST/.config/kwinrc"
+  install -m 0644 "$OVL/etc/xdg/kwinrc" "$R/etc/skel/.config/kwinrc"
+else
+  cat >"$HOME_DST/.config/kwinrc" <<'EOF'
 [Desktops]
 Number=1
 Rows=1
 
 [Xwayland]
-Scale=1.25
+Scale=1.5
+
+[Wayland]
+VirtualKeyboardEnabled=false
 EOF
+fi
 if [[ -f "$HOME_DST/.config/kdeglobals" ]]; then
   if grep -q '^\[KScreen\]' "$HOME_DST/.config/kdeglobals"; then
-    sed -i 's/^ScaleFactor=.*/ScaleFactor=1.25/' "$HOME_DST/.config/kdeglobals" || true
+    sed -i 's/^ScaleFactor=.*/ScaleFactor=1.5/' "$HOME_DST/.config/kdeglobals" || true
   else
-    printf '\n[KScreen]\nScaleFactor=1.25\nScreenScaleFactors=DSI-1=1.25\n' >>"$HOME_DST/.config/kdeglobals"
+    printf '\n[KScreen]\nScaleFactor=1.5\nScreenScaleFactors=DSI-1=1.5\n' >>"$HOME_DST/.config/kdeglobals"
   fi
 else
-  printf '[KScreen]\nScaleFactor=1.25\nScreenScaleFactors=DSI-1=1.25\n' >"$HOME_DST/.config/kdeglobals"
+  printf '[KScreen]\nScaleFactor=1.5\nScreenScaleFactors=DSI-1=1.5\n' >"$HOME_DST/.config/kdeglobals"
+fi
+
+# ── Lutris (Games; Holo deps + ALARM package) ───────────────────────────────
+if [[ "${SKIP_LUTRIS:-0}" != "1" ]]; then
+  log "Lutris"
+  if [[ "${EUID}" -ne 0 ]]; then
+    die "Lutris install requires root — re-run apply as root or set SKIP_LUTRIS=1"
+  fi
+  bash "${SCRIPT_DIR}/install-lutris-into-rootfs.sh" "$R" \
+    || die "Lutris install incomplete"
+else
+  log "SKIP Lutris (SKIP_LUTRIS=1)"
+fi
+
+# ── Heroic Games Launcher (Games; arm64 build, slow) ─────────────────────────
+if [[ "${SKIP_HEROIC:-0}" != "1" ]]; then
+  log "Heroic Games Launcher (arm64 build)"
+  if [[ "${EUID}" -ne 0 ]]; then
+    die "Heroic build requires root — re-run apply as root or set SKIP_HEROIC=1"
+  fi
+  # shellcheck source=lib/ensure-build-node.sh
+  source "${SCRIPT_DIR}/lib/ensure-build-node.sh"
+  ensure_build_node "$ROOT" || die \
+    "Heroic needs Node 22 + pnpm 10 on the build host (network for vendor/.cache)"
+  bash "${SCRIPT_DIR}/install-heroic-into-rootfs.sh" "$R" \
+    || die "Heroic install incomplete"
+else
+  log "SKIP Heroic (SKIP_HEROIC=1)"
 fi
 
 if command -v gtk-update-icon-cache >/dev/null 2>&1; then

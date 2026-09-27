@@ -1,0 +1,14 @@
+[Unit]
+Description=Create SteamOS /home/.steamos/offload paths for flatpak
+DefaultDependencies=no
+After=local-fs.target home.mount
+Before=steamos-offload.target flatpak-system-helper.service
+ConditionPathIsMountPoint=/home
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/lib/steamos/sm8550-setup-steamos-offload
+
+[Install]
+WantedBy=local-fs.target

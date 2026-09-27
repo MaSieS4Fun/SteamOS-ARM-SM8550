@@ -90,6 +90,8 @@ Inherited from **SteamOS-Ubuntu**. See
 | **Proton ARM Easy Manager** | In-tree / inspired by ProtonPlus | ARM Proton helper |
 | **Steam ROM Manager** | https://github.com/SteamGridDB/steam-rom-manager | Desktop launcher |
 | **Easy UFS Install** | `external-and-mods/ufs-install/` (MaSi-OS UFS lineage) | Internal UFS install: ROCKNIX + STORAGE + HOME |
+| **Lutris** | https://lutris.net | Open gaming platform (Arch Linux ARM package + Holo deps at bake) |
+| **Heroic Games Launcher** | https://github.com/Heroic-Games-Launcher/HeroicGamesLauncher | Epic/GOG/Amazon launcher; **linux arm64** build at bake (no official ARM AppImage). Bake script adapted from [SteamOS-Ubuntu](https://github.com/MaSieS4Fun/SteamOS-Ubuntu) `install-heroic-into-rootfs.sh`. |
 
 ---
 

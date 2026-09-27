@@ -30,7 +30,6 @@
  */
 
 #include "gamescope_shared.h"
-#include "backlight.hpp"
 #include "xwayland_ctx.hpp"
 #include <X11/X.h>
 #include <X11/Xlib.h>
@@ -614,7 +613,7 @@ create_color_mgmt_luts(const gamescope_color_mgmt_t& newColorMgmt, gamescope_col
 
 			if ( inputEOTF == EOTF_Gamma22 )
 			{
-				flGain = newColorMgmt.flSDRInputGain * newColorMgmt.flSoftwareBacklightGain;
+				flGain = newColorMgmt.flSDRInputGain;
 				if ( newColorMgmt.outputEncodingEOTF == EOTF_Gamma22 )
 				{
 					// G22 -> G22. Does not matter what the g22 mult is
@@ -724,8 +723,6 @@ update_color_mgmt()
 {
 	if ( !GetBackend()->GetCurrentConnector() )
 		return;
-
-	g_ColorMgmt.pending.flSoftwareBacklightGain = gamescope::GetSoftwareBacklightGain();
 
 	GetBackend()->GetCurrentConnector()->GetNativeColorimetry(
 		g_bOutputHDREnabled,
@@ -1322,6 +1319,16 @@ window_is_steam( steamcompmgr_win_t *w )
 	return w && ( w->bIsViewport || w->hViewportTarget || w->isSteamLegacyBigPicture || w->appID == 769 );
 }
 
+static bool win_has_game_id( steamcompmgr_win_t *w );
+static bool window_is_running_game( steamcompmgr_win_t *w );
+static steamcompmgr_win_t *sm8550_find_steam_ui_window( steamcompmgr_win_t *overlay );
+struct FrameInfo_t;
+static void sm8550_paint_qam_steam_layers(
+	global_focus_t *pFocus,
+	steamcompmgr_win_t *w,
+	steamcompmgr_win_t *overlay,
+	FrameInfo_t *frameInfo );
+
 static bool
 window_is_vr_scene_app( steamcompmgr_win_t *w )
 {
@@ -1753,8 +1760,8 @@ window_last_done_commit_index( steamcompmgr_win_t *w )
 
 	// Gamescope WSI attaches a native swapchain (often 720p) as override_surface
 	// while Xwayland still commits a nested-sized pixmap. Prefer the swapchain
-	// or the image never fills the panel.
-	if ( lastOverrideCommit != -1 )
+	// for running games only — Steam UI must keep X11 pixmap commits (override=0).
+	if ( lastOverrideCommit != -1 && window_is_running_game( w ) )
 		return lastOverrideCommit;
 
 	return lastCommit;
@@ -2371,6 +2378,8 @@ namespace PaintWindowFlag
 	static const uint32_t NoScale = 1u << 4;
 	static const uint32_t NoFilter = 1u << 5;
 	static const uint32_t CoverageMode = 1u << 6;
+	// Viewport child that must sit above a running-game layer (QAM / Gamepad UI).
+	static const uint32_t ViewportOverlayZ = 1u << 7;
 }
 using PaintWindowFlags = uint32_t;
 
@@ -2472,7 +2481,7 @@ paint_window_commit( const gamescope::Rc<commit_t> &lastCommit, steamcompmgr_win
 		}
 	}
 
-	bool offset = ( ( w->GetGeometry().nX || w->GetGeometry().nY ) && w != scaleW );
+	bool offset = ( ( w->GetGeometry().nX || w->GetGeometry().nY ) && w != scaleW && !window_is_running_game( w ) );
 
 	if (sourceWidth != (int32_t)currentOutputWidth || sourceHeight != (int32_t)currentOutputHeight || offset || globalScaleRatio != 1.0f)
 	{
@@ -2528,6 +2537,11 @@ paint_window_commit( const gamescope::Rc<commit_t> &lastCommit, steamcompmgr_win
 	if ( w->isExternalOverlay )
 	{
 		layer->zpos = g_zposExternalOverlay;
+	}
+
+	if ( ( flags & PaintWindowFlag::ViewportOverlayZ ) && !w->isOverlay && !w->isExternalOverlay )
+	{
+		layer->zpos = g_zposOverlay;
 	}
 
 	layer->zpos += unZPosOffset;
@@ -2610,6 +2624,11 @@ void update_viewport_stacking( steamcompmgr_win_t *w )
 	std::sort( w->pViewportLayers.begin(), w->pViewportLayers.end(),
 	[]( steamcompmgr_win_t *pA, steamcompmgr_win_t *pB )
 	{
+		const bool gA = window_is_running_game( pA );
+		const bool gB = window_is_running_game( pB );
+		// Paint running-game layers first (lower unZPosOffset); Steam UI after.
+		if ( gA != gB )
+			return gA && !gB;
 		return get_win_stacking_order( pA ) > get_win_stacking_order( pB );
 	} );
 }
@@ -2623,6 +2642,15 @@ paint_window(steamcompmgr_win_t *w, steamcompmgr_win_t *scaleW, struct FrameInfo
 		update_viewport_stacking( w );
 
 		uint32_t unViewportLayer = 0;
+		bool bViewportHasGame = false;
+		for ( steamcompmgr_win_t *pLayer : w->pViewportLayers )
+		{
+			if ( window_is_running_game( pLayer ) )
+			{
+				bViewportHasGame = true;
+				break;
+			}
+		}
 		for ( steamcompmgr_win_t *pLayer : w->pViewportLayers )
 		{
 			if (pLayer->xwayland().a.map_state != IsViewable)
@@ -2631,9 +2659,15 @@ paint_window(steamcompmgr_win_t *w, steamcompmgr_win_t *scaleW, struct FrameInfo
 			if (pLayer->xwayland().a.width == 1 && pLayer->xwayland().a.height == 1)
 				continue;
 
-			xwm_log.infof( "Viewport Layer %d (0x%lx) -> (%d, %d) [%d x %d ] Map: %d", unViewportLayer, (unsigned long)pLayer->xwayland().id, pLayer->xwayland().a.x, pLayer->xwayland().a.y, pLayer->xwayland().a.width, pLayer->xwayland().a.height, pLayer->xwayland().a.map_state );
+			xwm_log.infof( "Viewport Layer %d (0x%lx) -> (%d, %d) [%d x %d ] Map: %d game=%d", unViewportLayer, (unsigned long)pLayer->xwayland().id, pLayer->xwayland().a.x, pLayer->xwayland().a.y, pLayer->xwayland().a.width, pLayer->xwayland().a.height, pLayer->xwayland().a.map_state, window_is_running_game( pLayer ) ? 1 : 0 );
 
-			paint_window( pLayer, scaleW, frameInfo, cursor, flags, flOpacityScale, fit, unZPosOffset++ );
+			// Game layers: scale the swapchain to the nest. Using the Steam
+			// viewport as scaleW paints at QAM/Home postage-stamp geometry.
+			const bool bGameLayer = window_is_running_game( pLayer );
+			PaintWindowFlags layerFlags = flags;
+			if ( bViewportHasGame && !bGameLayer )
+				layerFlags |= PaintWindowFlag::ViewportOverlayZ;
+			paint_window( pLayer, bGameLayer ? pLayer : scaleW, frameInfo, cursor, layerFlags, flOpacityScale, bGameLayer ? nullptr : fit, unZPosOffset++ );
 
 			// Remove base plane flag for any other layers
 			flags &= ~PaintWindowFlag::BasePlane;
@@ -2922,6 +2956,28 @@ paint_all( global_focus_t *pFocus, bool async )
 		{
 			stats_printf( "focus=%i\n", w ? w->appID : 0 );
 		}
+
+		if ( getenv( "GAMESCOPE_SM8550_QAM_DEBUG" ) )
+		{
+			gamescope::Rc<commit_t> oCommit;
+			if ( overlay )
+				get_window_last_done_commit( overlay, oCommit );
+			xwm_log.infof(
+				"qam-diag: focus=0x%lx appid=%u viewport=%d gameFocused=%d "
+				"overlay=0x%lx op=%u ov=%dx%d commit=%d ovl-ifm=%u qam=%d ext=0x%lx",
+				w ? (unsigned long) x11_win( w ) : 0ul,
+				w ? w->appID : 0u,
+				w ? (int) w->bIsViewport : 0,
+				(int) gameFocused,
+				overlay ? (unsigned long) x11_win( overlay ) : 0ul,
+				overlay ? overlay->opacity : 0u,
+				overlay ? overlay->GetGeometry().nWidth : 0,
+				overlay ? overlay->GetGeometry().nHeight : 0,
+				oCommit ? 1 : 0,
+				overlay ? overlay->inputFocusMode : 0u,
+				( overlay && gamesRunningCount > 0 && w && window_is_running_game( w ) ) ? 1 : 0,
+				externalOverlay ? (unsigned long) x11_win( externalOverlay ) : 0ul );
+		}
 	}
 
 	struct FrameInfo_t frameInfo = {};
@@ -2992,7 +3048,6 @@ paint_all( global_focus_t *pFocus, bool async )
 							pFocus->fadeWindow = None;
 						}
 					}
-					// Just draw focused window as normal, be it Steam or the game
 					paint_window(w, w, &frameInfo, pFocus->cursor, PaintWindowFlag::BasePlane | PaintWindowFlag::DrawBorders, 1.0f, override);
 
 					if ( frameInfo.layerCount > 0 && frameInfo.layers[0].tex )
@@ -3108,7 +3163,9 @@ paint_all( global_focus_t *pFocus, bool async )
 			}
 		}
 	}
-	
+
+	sm8550_paint_qam_steam_layers( pFocus, w, overlay, &frameInfo );
+
 	if (notification)
 	{
 		if (notification->opacity)
@@ -3661,6 +3718,59 @@ win_has_game_id( steamcompmgr_win_t *w )
 }
 
 static bool
+window_is_running_game( steamcompmgr_win_t *w )
+{
+	return w && win_has_game_id( w ) && !window_is_steam( w ) && !window_is_vr_scene_app( w ) &&
+		!w->isOverlay && !w->isExternalOverlay && !w->isSteamStreamingClient;
+}
+
+static steamcompmgr_win_t *
+sm8550_find_steam_ui_window( steamcompmgr_win_t *overlay )
+{
+	if ( !getenv( "GAMESCOPE_SM8550_STEAM_INTERNAL_X11" ) )
+		return nullptr;
+
+	for ( size_t i = 0; gamescope_xwayland_server_t *server = wlserver_get_xwayland_server( i ); i++ )
+	{
+		xwayland_ctx_t *xctx = server->ctx.get();
+		for ( steamcompmgr_win_t *sw = xctx->list; sw; sw = sw->xwayland().next )
+		{
+			if ( !window_is_steam( sw ) || sw->isOverlay || sw == overlay )
+				continue;
+			if ( sw->xwayland().a.map_state != IsViewable )
+				continue;
+			gamescope::Rc<commit_t> steamCommit;
+			get_window_last_done_commit( sw, steamCommit );
+			if ( steamCommit )
+				return sw;
+		}
+	}
+	return nullptr;
+}
+
+static void
+sm8550_paint_qam_steam_layers(
+	global_focus_t *pFocus,
+	steamcompmgr_win_t *w,
+	steamcompmgr_win_t *overlay,
+	struct FrameInfo_t *frameInfo )
+{
+	if ( !getenv( "GAMESCOPE_SM8550_PAINT_STEAM_BASE" ) )
+		return;
+	if ( !getenv( "GAMESCOPE_SM8550_STEAM_INTERNAL_X11" ) )
+		return;
+	if ( !overlay || gamesRunningCount == 0 || !w || !window_is_running_game( w ) )
+		return;
+
+	const PaintWindowFlags uiFlags = PaintWindowFlag::DrawBorders | PaintWindowFlag::NoFilter |
+		PaintWindowFlag::ViewportOverlayZ |
+		( cv_overlay_unmultiplied_alpha ? PaintWindowFlag::CoverageMode : 0 );
+
+	if ( steamcompmgr_win_t *steamUi = sm8550_find_steam_ui_window( overlay ) )
+		paint_window( steamUi, steamUi, frameInfo, pFocus->cursor, uiFlags );
+}
+
+static bool
 win_is_useless( steamcompmgr_win_t *w )
 {
 	// Windows that are 1x1 are pretty useless for override redirects.
@@ -4113,7 +4223,12 @@ void xwayland_ctx_t::DetermineAndApplyFocus( const std::vector< steamcompmgr_win
 	{
 		if (w->isOverlay)
 		{
-			if (w->GetGeometry().nWidth > 1200 && w->opacity >= maxOpacity)
+			const bool gameRunning = ctx->focus.focusWindow &&
+				window_is_running_game( ctx->focus.focusWindow );
+			const int overlayMinWidth = gameRunning
+				? ( getenv( "GAMESCOPE_SM8550_STEAM_INTERNAL_X11" ) ? 0 : 360 )
+				: 1200;
+			if (w->GetGeometry().nWidth > overlayMinWidth && w->opacity >= maxOpacity)
 			{
 				ctx->focus.overlayWindow = w;
 				maxOpacity = w->opacity;
@@ -4277,6 +4392,9 @@ void xwayland_ctx_t::DetermineAndApplyFocus( const std::vector< steamcompmgr_win
 	const bool bForceThisWindowFullscreen =
 		window_is_steam( ctx->focus.focusWindow ) &&
 		( window_is_fullscreen( ctx->focus.focusWindow ) || ctx->force_windows_fullscreen );
+	const bool bIsGameWindow =
+		win_has_game_id( ctx->focus.focusWindow ) &&
+		!window_is_steam( ctx->focus.focusWindow );
 
 	if ( bForceThisWindowFullscreen )
 	{
@@ -4293,7 +4411,7 @@ void xwayland_ctx_t::DetermineAndApplyFocus( const std::vector< steamcompmgr_win
 		if ( w->GetGeometry().nWidth != fs_width || w->GetGeometry().nHeight != fs_height || globalScaleRatio != 1.0f )
 			XResizeWindow(ctx->dpy, ctx->focus.focusWindow->xwayland().id, fs_width, fs_height);
 	}
-	else
+	else if ( !bIsGameWindow )
 	{
 		if (ctx->focus.focusWindow->sizeHintsSpecified &&
 			((unsigned)ctx->focus.focusWindow->GetGeometry().nWidth != ctx->focus.focusWindow->requestedWidth ||
@@ -4401,6 +4519,7 @@ steamcompmgr_xdg_determine_and_apply_focus( const std::vector< steamcompmgr_win_
 }
 
 uint32_t g_focusedBaseAppId = 0;
+static uint32_t s_unLastRunningGameAppId = 0;
 
 static void
 determine_and_apply_focus( global_focus_t *pFocus )
@@ -4644,9 +4763,15 @@ determine_and_apply_focus( global_focus_t *pFocus )
 		focusedAppId = pFocus->inputFocusWindow->appID;
 		focused_display = get_win_display_name(pFocus->focusWindow);
 		focusWindow_pid = pFocus->focusWindow->pid;
+		if ( window_is_running_game( pFocus->focusWindow ) )
+			s_unLastRunningGameAppId = pFocus->focusWindow->appID;
 	}
 
-	g_focusedBaseAppId = (uint32_t)focusedAppId;
+	unsigned long focusedGfxAppId = focusedBaseAppId;
+	if ( focusedAppId == 769 && s_unLastRunningGameAppId != 0 )
+		focusedGfxAppId = s_unLastRunningGameAppId;
+
+	g_focusedBaseAppId = (uint32_t)focusedGfxAppId;
 
 	if ( pFocus->inputFocusWindow )
 	{
@@ -4666,7 +4791,7 @@ determine_and_apply_focus( global_focus_t *pFocus )
 							(unsigned char *)&focusedAppId, focusedAppId != 0 ? 1 : 0 );
 
 			XChangeProperty( root_ctx->dpy, root_ctx->root, root_ctx->atoms.gamescopeFocusedAppGfxAtom, XA_CARDINAL, 32, PropModeReplace,
-							(unsigned char *)&focusedBaseAppId, focusedBaseAppId != 0 ? 1 : 0 );
+							(unsigned char *)&focusedGfxAppId, focusedGfxAppId != 0 ? 1 : 0 );
 		}
 
 		XChangeProperty( root_ctx->dpy, root_ctx->root, root_ctx->atoms.gamescopeFocusedWindowAtom, XA_CARDINAL, 32, PropModeReplace,
@@ -5038,6 +5163,8 @@ unmap_win(xwayland_ctx_t *ctx, Window id, bool fade)
 	steamcompmgr_win_t *w = find_win(ctx, id);
 	if (!w)
 		return;
+	if ( window_is_running_game( w ) )
+		return;
 	w->xwayland().a.map_state = IsUnmapped;
 
 	MakeFocusDirty();
@@ -5337,6 +5464,15 @@ configure_win(xwayland_ctx_t *ctx, XConfigureEvent *ce)
 		return;
 	}
 
+	// Match configure_request: QAM/Home ConfigureNotify must not shrink the game X window.
+	if ( window_is_running_game( w ) )
+	{
+		if ( ce->above != None )
+			restack_win( ctx, w, ce->above );
+		MakeFocusDirty();
+		return;
+	}
+
 	w->xwayland().a.x = ce->x;
 	w->xwayland().a.y = ce->y;
 	w->xwayland().a.width = ce->width;
@@ -5382,6 +5518,11 @@ static void configure_request(xwayland_ctx_t *ctx, XConfigureRequestEvent *confi
 		.sibling = configureRequest->above,
 		.stack_mode = configureRequest->detail
 	};
+
+	steamcompmgr_win_t *w = find_win( ctx, configureRequest->window, false );
+	if ( w && window_is_running_game( w ) &&
+	     ( configureRequest->value_mask & ( CWX | CWY | CWWidth | CWHeight ) ) )
+		return;
 
 	XConfigureWindow( ctx->dpy, configureRequest->window, configureRequest->value_mask, &changes );
 }
@@ -5632,6 +5773,8 @@ handle_wm_change_state(xwayland_ctx_t *ctx, steamcompmgr_win_t *w, XClientMessag
 	long state = ev->data.l[0];
 
 	if (state == ICCCM_ICONIC_STATE) {
+		if ( window_is_running_game( w ) )
+			return;
 		xwm_log.debugf("Faking WM_CHANGE_STATE to ICONIC for window 0x%lx", w->xwayland().id);
 		set_wm_state( ctx, w->xwayland().id, ICCCM_ICONIC_STATE );
 	} else {
@@ -5981,6 +6124,11 @@ handle_property_notify(xwayland_ctx_t *ctx, XPropertyEvent *ev)
 				{
 					hasRepaintNonBasePlane = true;
 				}
+				if ( getenv( "GAMESCOPE_SM8550_STEAM_INTERNAL_X11" ) && w->isOverlay )
+				{
+					hasRepaint = true;
+					hasRepaintNonBasePlane = true;
+				}
 				if ( w == ctx->focus.externalOverlayWindow )
 				{
 					hasRepaint = true;
@@ -5998,7 +6146,11 @@ handle_property_notify(xwayland_ctx_t *ctx, XPropertyEvent *ev)
 			{
 				if (w->isOverlay)
 				{
-					if (w->GetGeometry().nWidth > 1200 && w->opacity >= maxOpacity)
+					const bool gameRunning = ctx->focus.focusWindow &&
+						window_is_running_game( ctx->focus.focusWindow );
+					// SM8550 QAM can be narrower than 360px in the viewport model.
+					const int overlayMinWidth = gameRunning ? 0 : 1200;
+					if (w->GetGeometry().nWidth > overlayMinWidth && w->opacity >= maxOpacity)
 					{
 						ctx->focus.overlayWindow = w;
 						maxOpacity = w->opacity;
@@ -6518,22 +6670,6 @@ handle_property_notify(xwayland_ctx_t *ctx, XPropertyEvent *ev)
 		uint32_t val = get_prop( ctx, ctx->root, ctx->atoms.gamescopeSDROnHDRContentBrightness, 0 );
 		if ( set_sdr_on_hdr_brightness( bit_cast<float>(val) ) )
 			hasRepaint = true;
-	}
-	if ( ev->atom == ctx->atoms.gamescopeInternalDisplayBrightness )
-	{
-		uint32_t val = get_prop( ctx, ctx->root, ctx->atoms.gamescopeInternalDisplayBrightness, 0 );
-		const float flVal = bit_cast<float>( val );
-		if ( gamescope::ApplySteamBrightnessValue( flVal ) )
-		{
-			const float flGain = gamescope::GetSoftwareBacklightGain();
-			if ( g_ColorMgmt.pending.flSoftwareBacklightGain != flGain )
-			{
-				g_ColorMgmt.pending.flSoftwareBacklightGain = flGain;
-				hasRepaint = true;
-			}
-			if ( set_internal_display_brightness( flVal < 1.f ? 500.f * std::max( flVal, 0.01f ) : flVal ) )
-				hasRepaint = true;
-		}
 	}
 	if ( ev->atom == ctx->atoms.gamescopeHDRItmEnable )
 	{
@@ -7372,9 +7508,12 @@ void update_wayland_res(CommitDoneList_t *doneCommits, steamcompmgr_win_t *w, Re
 
 	// If we have an override surface, make sure this commit is for the current surface
 	// or if the commit is probably bogus.
-	// Always ignore X/glamor pixmaps while WSI override is active: a 1080p
-	// X window around a 720p swapchain otherwise becomes the base plane.
-	bool bOnlyCurrentSurface = w->bHasHadNonSRGBColorSpace || bPossiblyBogus || !bHasDamage || cv_surface_update_force_only_current_surface || w->override_surface() != nullptr;
+	// Ignore X/glamor pixmaps while a *game* WSI override is active: a 1080p
+	// X window around a 720p swapchain otherwise becomes the base plane. Steam UI
+	// must still accept X11 commits when CEF also has a Gamescope WSI surface.
+	bool bOnlyCurrentSurface = w->bHasHadNonSRGBColorSpace || bPossiblyBogus || !bHasDamage ||
+		cv_surface_update_force_only_current_surface ||
+		( w->override_surface() != nullptr && window_is_running_game( w ) );
 
 	bool for_current_surface = !w->override_surface() || w->current_surface() == reslistentry.surf;
 
@@ -8009,7 +8148,6 @@ void init_xwayland_ctx(uint32_t serverId, gamescope_xwayland_server_t *xwayland_
 	ctx->atoms.gamescopeDebugHDRHeatmap = XInternAtom( ctx->dpy, "GAMESCOPE_DEBUG_HDR_HEATMAP", false );
 	ctx->atoms.gamescopeHDROutputFeedback = XInternAtom( ctx->dpy, "GAMESCOPE_HDR_OUTPUT_FEEDBACK", false );
 	ctx->atoms.gamescopeSDROnHDRContentBrightness = XInternAtom( ctx->dpy, "GAMESCOPE_SDR_ON_HDR_CONTENT_BRIGHTNESS", false );
-	ctx->atoms.gamescopeInternalDisplayBrightness = XInternAtom( ctx->dpy, "GAMESCOPE_INTERNAL_DISPLAY_BRIGHTNESS", false );
 	ctx->atoms.gamescopeHDRInputGain = XInternAtom( ctx->dpy, "GAMESCOPE_HDR_INPUT_GAIN", false );
 	ctx->atoms.gamescopeSDRInputGain = XInternAtom( ctx->dpy, "GAMESCOPE_SDR_INPUT_GAIN", false );
 	ctx->atoms.gamescopeHDRItmEnable = XInternAtom( ctx->dpy, "GAMESCOPE_HDR_ITM_ENABLE", false );
@@ -8210,6 +8348,16 @@ void update_mode_atoms(xwayland_ctx_t *root_ctx, bool* needs_flush = nullptr)
 	if (needs_flush)
 		*needs_flush = true;
 
+	// SM8550: Steam config.vdf often says External+Windowed; still expose internal X11 atoms.
+	if ( getenv( "GAMESCOPE_SM8550_STEAM_INTERNAL_X11" ) )
+	{
+		XDeleteProperty(root_ctx->dpy, root_ctx->root, root_ctx->atoms.gamescopeDisplayModeListExternal);
+		uint32_t zero = 0;
+		XChangeProperty(root_ctx->dpy, root_ctx->root, root_ctx->atoms.gamescopeDisplayIsExternal, XA_CARDINAL, 32, PropModeReplace,
+			(unsigned char *)&zero, 1 );
+		return;
+	}
+
 	if ( GetBackend()->GetCurrentConnector() && GetBackend()->GetCurrentConnector()->GetScreenType() == gamescope::GAMESCOPE_SCREEN_TYPE_INTERNAL )
 	{
 		XDeleteProperty(root_ctx->dpy, root_ctx->root, root_ctx->atoms.gamescopeDisplayModeListExternal);
@@ -8386,8 +8534,16 @@ void LaunchNestedChildren( char **ppPrimaryChildArgv )
 			unsetenv( "LD_PRELOAD" );
 
 		unsetenv( "ENABLE_VKBASALT" );
-		// Enable Gamescope WSI by default for nested.
-		setenv( "ENABLE_GAMESCOPE_WSI", "1", 0 );
+		// Respect session opt-out; WSI + zink often black-screens Steam UI on SM8550.
+		if ( getenv( "DISABLE_GAMESCOPE_WSI" ) )
+		{
+			setenv( "ENABLE_GAMESCOPE_WSI", "0", 1 );
+			setenv( "DISABLE_GAMESCOPE_WSI", "1", 1 );
+		}
+		else
+		{
+			setenv( "ENABLE_GAMESCOPE_WSI", "1", 0 );
+		}
 
 		// Unset this to avoid it leaking to Proton apps, etc.
 		unsetenv( "SDL_VIDEODRIVER" );

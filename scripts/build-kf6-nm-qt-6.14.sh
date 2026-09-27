@@ -11,18 +11,7 @@ VER="6.14.0"
 
 command -v bwrap >/dev/null 2>&1 || { echo "ERROR: bwrap required" >&2; exit 1; }
 
-if [[ ! -f "$R/usr/share/ECM/cmake/ECMConfig.cmake" ]]; then
-  ECM_PKG="${ECM_PKG:-/tmp/extra-cmake-modules-6.30.0-1-any.pkg.tar.xz}"
-  if [[ ! -f "$ECM_PKG" ]]; then
-    curl -fsSL --max-time 60 -o "$ECM_PKG" \
-      "http://mirror.archlinuxarm.org/aarch64/extra/extra-cmake-modules-6.30.0-1-any.pkg.tar.xz"
-  fi
-  tmp="$(mktemp -d)"
-  tar -C "$tmp" -xf "$ECM_PKG"
-  mkdir -p "$R/usr/share"
-  cp -a "$tmp/usr/share/ECM" "$R/usr/share/"
-  rm -rf "$tmp"
-fi
+"${SCRIPT_DIR}/lib/ensure-ecm-rootfs.sh" "$R"
 
 run() {
   bwrap --bind "$R" / \

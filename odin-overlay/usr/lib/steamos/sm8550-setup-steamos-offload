@@ -1,0 +1,30 @@
+#!/bin/bash
+# Ensure SteamOS writable offload dirs exist on /home (flatpak, /var/tmp cache).
+set -euo pipefail
+
+OFFLOAD=/home/.steamos/offload
+STAMP=/var/lib/steamos-sm8550/offload-ready
+
+[[ -f "$STAMP" ]] && exit 0
+[[ -d /home ]] || exit 0
+
+mkdir -p \
+  "${OFFLOAD}/var/lib/flatpak" \
+  "${OFFLOAD}/var/tmp" \
+  "${OFFLOAD}/var/log" \
+  "${OFFLOAD}/root" \
+  "${OFFLOAD}/srv" \
+  "${OFFLOAD}/var/cache/pacman" \
+  "${OFFLOAD}/var/lib/containers" \
+  "${OFFLOAD}/var/lib/docker" \
+  "${OFFLOAD}/var/lib/systemd/coredump" \
+  "${OFFLOAD}/var/lib/steamos-log-submitter"
+
+chown -R root:root "${OFFLOAD}/var/lib/flatpak" "${OFFLOAD}/var/tmp" 2>/dev/null || true
+chmod 0755 "${OFFLOAD}" "${OFFLOAD}/var" "${OFFLOAD}/var/lib" 2>/dev/null || true
+chmod 1777 "${OFFLOAD}/var/tmp" 2>/dev/null || true
+chmod 1777 /var/tmp 2>/dev/null || true
+
+mkdir -p /var/lib/steamos-sm8550
+touch "$STAMP"
+exit 0

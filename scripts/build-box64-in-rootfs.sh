@@ -42,10 +42,9 @@ run /usr/bin/cmake --build "$BUILD" -j"$(nproc)"
 echo "==> install Box64 into $R"
 run /usr/bin/cmake --install "$BUILD"
 ln -sfn /usr/local/bin/box64 "$R/usr/bin/box64"
-if [[ -f "$R/etc/binfmt.d/box64.conf" ]]; then
-  mkdir -p "$R/usr/lib/binfmt.d"
-  cp -a "$R/etc/binfmt.d/box64.conf" "$R/usr/lib/binfmt.d/box64.conf"
-fi
+# Official SteamOS uses Valve FEX-Emu for Proton x86_64. Do not register
+# Box64 as the system binfmt handler.
+rm -f "$R/etc/binfmt.d/box64.conf" "$R/usr/lib/binfmt.d/box64.conf"
 
 if strings "$R/usr/local/bin/box64" | grep -q 'GLIBC_2\.43'; then
   echo "ERROR: box64 still needs GLIBC_2.43 — not a Frame build" >&2

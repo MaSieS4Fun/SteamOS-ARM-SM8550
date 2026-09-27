@@ -28,24 +28,7 @@ command -v bwrap >/dev/null 2>&1 || {
   exit 1
 }
 
-# Extra CMake Modules is cmake-only (any). ALARM 6.7 kscreen packages are unusable.
-if [[ ! -f "$R/usr/share/ECM/cmake/ECMConfig.cmake" ]]; then
-  echo "==> installing extra-cmake-modules into rootfs"
-  ECM_PKG="${ECM_PKG:-/tmp/extra-cmake-modules-6.30.0-1-any.pkg.tar.xz}"
-  if [[ ! -f "$ECM_PKG" ]]; then
-    curl -fsSL --max-time 60 -o "$ECM_PKG" \
-      "http://mirror.archlinuxarm.org/aarch64/extra/extra-cmake-modules-6.30.0-1-any.pkg.tar.xz"
-  fi
-  tmp="$(mktemp -d)"
-  tar -C "$tmp" -xf "$ECM_PKG"
-  mkdir -p "$R/usr/share"
-  cp -a "$tmp/usr/share/ECM" "$R/usr/share/"
-  rm -rf "$tmp"
-fi
-[[ -f "$R/usr/share/ECM/cmake/ECMConfig.cmake" ]] || {
-  echo "ERROR: ECM still missing after install" >&2
-  exit 1
-}
+"${SCRIPT_DIR}/lib/ensure-ecm-rootfs.sh" "$R"
 
 rm -rf "$BUILD"
 mkdir -p "$BUILD"

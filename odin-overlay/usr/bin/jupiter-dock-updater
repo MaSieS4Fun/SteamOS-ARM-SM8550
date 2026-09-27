@@ -17,6 +17,12 @@ for arg in "$@"; do
       echo "FW up to date"
       exit 7
       ;;
+    --apply|--download|--install)
+      echo "FW Current: ${FW_VER}"
+      echo "FW up to date"
+      exit 7
+      ;;
   esac
 done
-exit 0
+# Unknown argv (Steam may call without --check): treat as up to date.
+exit 7

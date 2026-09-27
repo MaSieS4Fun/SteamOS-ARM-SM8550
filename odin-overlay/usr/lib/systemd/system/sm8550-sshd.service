@@ -1,0 +1,13 @@
+[Unit]
+Description=Ensure OpenSSH host keys exist (SM8550)
+After=local-fs.target
+Before=sshd.service sshd.socket
+# Always run ssh-keygen -A (no-op if keys OK). Partial/missing keys cause sshd exit 255.
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/sm8550-fix-sshd --prepare-only
+
+[Install]
+WantedBy=multi-user.target

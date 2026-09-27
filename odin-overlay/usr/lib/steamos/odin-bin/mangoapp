@@ -1,0 +1,3 @@
+#!/bin/bash
+# Legacy PATH hook — delegate to stock mangoapp (sibling model in gamescope-onready).
+exec /usr/bin/mangoapp "$@"

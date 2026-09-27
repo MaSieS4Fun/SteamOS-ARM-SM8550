@@ -44,7 +44,19 @@ dump() {
     echo
     echo "----- journal sddm/gamescope -----"
     journalctl -b -u sddm --no-pager -n 80 2>/dev/null || true
-    journalctl -b --user-unit gamescope-session.service --no-pager -n 80 2>/dev/null || true
+    journalctl -b --user-unit gamescope-session.service --no-pager -n 120 2>/dev/null || true
+    echo
+    echo "----- gamescope paint / drm -----"
+    journalctl -b --user-unit gamescope-session.service --no-pager 2>/dev/null \
+      | grep -iE 'profile=|binary=|game layer tex|paint|composite|drm:|flip|Cannot import FB|vulkan_composite' \
+      | tail -n 60 || true
+    echo
+    echo "----- modetest connectors -----"
+    /usr/bin/modetest -M msm -c 2>/dev/null | head -n 40 || true
+    echo
+    echo "----- steam config.vdf display -----"
+    grep -E 'IsExternalDisplay|Internal|External|Windowed|Fullscreen' \
+      /home/steamos/.local/share/Steam/config/config.vdf 2>/dev/null || true
   } >"$f" 2>&1
 }
 

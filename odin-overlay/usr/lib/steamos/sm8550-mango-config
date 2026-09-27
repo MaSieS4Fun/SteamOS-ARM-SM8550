@@ -1,0 +1,131 @@
+#!/bin/bash
+# Shared MangoHud config helpers for SM8550 Game Mode (mangoapp sibling model).
+set +e
+
+sm8550_mango_user_dir() {
+  printf '%s/.config/MangoHud/steam\n' "${HOME:-/home/steamos}"
+}
+
+sm8550_mango_sanitize_config() {
+  local conf="$1"
+  [[ -f "$conf" ]] || return 0
+
+  local preset=0
+  if grep -q '^preset=' "$conf" 2>/dev/null; then
+    preset="$(grep '^preset=' "$conf" | tail -1 | cut -d= -f2 | tr -d '[:space:]')"
+  fi
+  [[ "$preset" =~ ^[0-9]+$ ]] || preset=0
+
+  if grep -qE '^(control=mangohud|nis_steam_sharpness|fsr_steam_sharpness|no_display)' \
+      "$conf" 2>/dev/null; then
+    # The file may have been created by an offline root deploy. The session
+    # user owns the parent directory but cannot truncate that root-owned file.
+    # Replace it atomically through a user-owned temporary file instead.
+    local tmp
+    tmp="$(mktemp "${conf}.tmp.XXXXXX")" || return 1
+    printf 'control=mangoapp\npreset=%s\n' "$preset" >"$tmp"
+    chmod 0644 "$tmp" 2>/dev/null || true
+    mv -f "$tmp" "$conf"
+    return 0
+  fi
+
+  if grep -q '^no_display' "$conf" 2>/dev/null; then
+    sed -i '/^no_display/d' "$conf"
+    chmod 0644 "$conf" 2>/dev/null || true
+  fi
+
+  if ! grep -q '^control=mangoapp' "$conf" 2>/dev/null; then
+    local tmp
+    tmp="$(mktemp "${conf}.tmp.XXXXXX")" || return 1
+    {
+      printf 'control=mangoapp\n'
+      grep '^preset=' "$conf" 2>/dev/null || printf 'preset=%s\n' "$preset"
+    } >"$tmp"
+    chmod 0644 "$tmp" 2>/dev/null || true
+    mv -f "$tmp" "$conf"
+  fi
+}
+
+sm8550_mango_ensure_configs() {
+  local home_dir="${HOME:-/home/steamos}"
+  local sys="/usr/share/steamos-odin/MangoHud/steam"
+  local user_mango
+  local steam_root="${home_dir}/.local/share/Steam"
+  local steam_fallback="${steam_root}/config/mangohud.conf"
+  local selected_file
+
+  user_mango="$(sm8550_mango_user_dir)"
+  selected_file="${user_mango}/selected-preset"
+  mkdir -p "$user_mango" "${steam_root}/config"
+
+  if [[ -f "${sys}/presets.conf" ]]; then
+    cp -a "${sys}/presets.conf" "${user_mango}/presets.conf"
+  fi
+  if [[ ! -f "${user_mango}/MangoHud.conf" && -f "${sys}/MangoHud.conf" ]]; then
+    cp -a "${sys}/MangoHud.conf" "${user_mango}/MangoHud.conf"
+  fi
+  if [[ ! -f "${user_mango}/MangoHud.conf" ]]; then
+    printf '%s\n' 'control=mangoapp' 'preset=0' >"${user_mango}/MangoHud.conf"
+  fi
+
+  sm8550_mango_sanitize_config "${user_mango}/MangoHud.conf"
+
+  # Keep Steam's generated file separate from mangoapp's live config. Steam
+  # writes control=mangohud and sharpening keys by atomic rename; sharing that
+  # inode makes mangoapp consume the incompatible file and remain invisible.
+  local steam_preset=""
+  if [[ -e "$steam_fallback" ]]; then
+    if grep -q '^no_display' "$steam_fallback" 2>/dev/null; then
+      steam_preset=0
+    else
+      steam_preset="$(grep '^preset=' "$steam_fallback" 2>/dev/null \
+        | tail -1 | cut -d= -f2 | tr -d '[:space:]')"
+    fi
+  fi
+
+  if [[ "$steam_fallback" -ef "${user_mango}/MangoHud.conf" ]]; then
+    local steam_tmp
+    steam_tmp="$(mktemp "${steam_fallback}.tmp.XXXXXX")" || return 1
+    printf '%s\n' \
+      'control=mangohud' \
+      'fsr_steam_sharpness=5' \
+      'nis_steam_sharpness=10' \
+      "preset=${steam_preset:-0}" >"$steam_tmp"
+    chmod 0644 "$steam_tmp" 2>/dev/null || true
+    mv -f "$steam_tmp" "$steam_fallback"
+  fi
+
+  if [[ ! -e "$steam_fallback" ]]; then
+    steam_preset="$(grep '^preset=' "${user_mango}/MangoHud.conf" 2>/dev/null \
+      | tail -1 | cut -d= -f2 | tr -d '[:space:]')"
+    [[ "$steam_preset" =~ ^[0-9]+$ ]] || steam_preset=0
+    printf '%s\n' \
+      'control=mangohud' \
+      'fsr_steam_sharpness=5' \
+      'nis_steam_sharpness=10' \
+      "preset=${steam_preset}" >"$steam_fallback"
+    chmod 0644 "$steam_fallback" 2>/dev/null || true
+  fi
+
+  if [[ "$steam_preset" =~ ^[0-9]+$ ]]; then
+    printf '%s\n' "$steam_preset" >"$selected_file"
+    chmod 0644 "$selected_file" 2>/dev/null || true
+
+    local current_preset
+    current_preset="$(grep '^preset=' "${user_mango}/MangoHud.conf" 2>/dev/null \
+      | tail -1 | cut -d= -f2 | tr -d '[:space:]')"
+    if [[ "${SM8550_MANGO_DEFER_EFFECTIVE:-0}" != 1 \
+      && "$current_preset" != "$steam_preset" ]]; then
+      local user_tmp
+      user_tmp="$(mktemp "${user_mango}/MangoHud.conf.tmp.XXXXXX")" || return 1
+      printf 'control=mangoapp\npreset=%s\n' "$steam_preset" >"$user_tmp"
+      chmod 0644 "$user_tmp" 2>/dev/null || true
+      mv -f "$user_tmp" "${user_mango}/MangoHud.conf"
+    fi
+  fi
+}
+
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  sm8550_mango_ensure_configs
+  sm8550_mango_sanitize_config "$(sm8550_mango_user_dir)/MangoHud.conf"
+fi

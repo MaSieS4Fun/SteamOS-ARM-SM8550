@@ -2,8 +2,11 @@
 /rootfs/
 /rootfs.img
 /steamos-sm8550.img
+/steamos-sm8550.img.gz
 /*.img
+/*.img.gz
 /.image-mnt/
+/.rootfs-unpack-mnt/
 /chunks/
 /chunk-urls.txt
 /downloads/
@@ -11,6 +14,15 @@
 /backups/
 /out/
 /odin-apply.log
+/*.log
+/.compare_out.txt
+/ROOTFS_DISCOVER_SEARCH.txt
+/config/
+/gold-config/
+/output/
+/probe-rootfs.py
+/rootfs-search.py
+/run-search.sh
 
 # Host tools downloaded next to the tree
 /tools/casync.deb
@@ -45,6 +57,12 @@
 /external-and-mods/lsfg-vk/build/
 /external-and-mods/lsfg-vk/thirdparty/
 /external-and-mods/MangoHud/build/
+# Retain only the verified SM8550 graphics bundle in Git.
+/external-and-mods/mesa-sm8550/26.2.3/
+/external-and-mods/mesa-sm8550/opengl/
+
+# Heroic / Node bootstrap during image bake
+/vendor/.cache/
 
 # Python / JS build leftovers
 __pycache__/

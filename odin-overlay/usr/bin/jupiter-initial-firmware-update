@@ -1,3 +1,23 @@
-#!/bin/sh
-# Jupiter/Deck firmware helper is not on SM8550. Steam calls `check` at UI start.
+#!/usr/bin/env bash
+# AYN Odin / SM8550: no Steam Deck Jupiter/Galileo initial firmware.
+#
+# Valve semantics (jupiter-hw-support, NOT steamos-update / jupiter-dock-updater):
+#   check exit 0  → no initial firmware update needed
+#   check exit 7  → mandatory initial firmware update required (Deck OOBE screen)
+#   apply (no args) → run update then reboot
+set -uo pipefail
+
+SENTINEL=/etc/jupiter-ran-initial-firmware-update
+
+for arg in "$@"; do
+  case "$arg" in
+    check)
+      # Never prompt for Deck firmware on non-Valve hardware.
+      exit 0
+      ;;
+  esac
+done
+
+# Apply path: mark done, do not reboot (Steam expects success).
+touch "$SENTINEL" 2>/dev/null || true
 exit 0

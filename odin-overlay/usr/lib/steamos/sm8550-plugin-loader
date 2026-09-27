@@ -1,0 +1,38 @@
+#!/bin/bash
+# Decky PluginLoader is x86_64. Run it explicitly via Box64 (not global FEX).
+set -u
+LOADER="${1:-/home/steamos/homebrew/services/PluginLoader}"
+LOGDIR="/home/steamos/homebrew/logs"
+mkdir -p "$LOGDIR" 2>/dev/null || true
+LOG="${LOGDIR}/plugin_loader-box64.log"
+
+if [[ ! -x "$LOADER" ]]; then
+  echo "sm8550-plugin-loader: missing $LOADER" >&2
+  echo "$(date -Iseconds) missing $LOADER" >>"$LOG" 2>/dev/null || true
+  exit 1
+fi
+
+export HOME="${HOME:-/home/steamos}"
+export USER="${USER:-steamos}"
+export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-/home/steamos/.config}"
+export XDG_DATA_HOME="${XDG_DATA_HOME:-/home/steamos/.local/share}"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/1000}"
+
+find_box64() {
+  local b
+  for b in /usr/local/bin/box64 /usr/bin/box64; do
+    [[ -x "$b" ]] && { printf '%s\n' "$b"; return 0; }
+  done
+  command -v box64 >/dev/null 2>&1 && { command -v box64; return 0; }
+  return 1
+}
+
+BOX64_BIN="$(find_box64 || true)"
+if [[ -z "$BOX64_BIN" ]]; then
+  echo "sm8550-plugin-loader: box64 is not installed (run update-box64)" >&2
+  echo "$(date -Iseconds) missing box64" >>"$LOG" 2>/dev/null || true
+  exit 127
+fi
+
+echo "$(date -Iseconds) starting $LOADER via $BOX64_BIN" >>"$LOG" 2>/dev/null || true
+exec "$BOX64_BIN" "$LOADER" >>"$LOG" 2>&1

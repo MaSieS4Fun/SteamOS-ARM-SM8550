@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch SteamOS Manager SDDM session selection
+
+[Path]
+PathChanged=/etc/sddm.conf.d
+Unit=sm8550-preserve-sddm-session.service
+
+[Install]
+WantedBy=sddm.service

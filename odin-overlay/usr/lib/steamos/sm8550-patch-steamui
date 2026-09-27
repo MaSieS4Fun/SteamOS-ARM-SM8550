@@ -46,8 +46,154 @@ NEW_CHECK = (
     "[{eresult:s.R}];let t=!1;for(const r of e){if(40===r.eresult&&!r.available)continue;"
     "if(r.eresult!=s.R){if(r.eresult!=s.zi)return r.eresult;t=!0}}return t?s.zi:s.R}"
 )
+OLD_APPLY = (
+    "GetMostSpecificApplyResult(){const e=this.m_updateState.update_apply_results??"
+    "[{eresult:s.R}];let t=!1;for(const r of e)if(r.eresult!=s.R){if(r.eresult!=s.zi)"
+    "return r.eresult;t=!0}return t?s.zi:s.R}"
+)
+NEW_APPLY = (
+    "GetMostSpecificApplyResult(){const e=this.m_updateState.update_apply_results??"
+    "[{eresult:s.R}];let t=!1;for(const r of e){if(40===r.eresult&&!r.available)continue;"
+    "if(r.eresult!=s.R){if(r.eresult!=s.zi)return r.eresult;t=!0}}return t?s.zi:s.R}"
+)
+
+# AYN Odin / SM8550: no Steam Deck dock firmware or mandatory OS takeover.
+SA_OLD = (
+    'function sA(e){const t=(0,hm.PU)(),[r]=(0,Ne.VI)("force_fake_mandatory_update"),'
+    '[n,s]=p.useState(!1);if(!(0,w.rf)()&&!r)return null;return!(r||t)||n?null:'
+    '(0,i.jsx)(nA,{setForceSkip:s})}'
+)
+SA_NEW = "function sA(e){return null}"
+
+MANDATORY_OLD = (
+    "function f(){const e=C(e=>e.is_mandatory_update_available??!1);"
+    "return e.isSuccess&&e.data}"
+)
+MANDATORY_NEW = "function f(){return!1}"
+
+# After Wi-Fi, keep OOBE Update page so EnsureOOOBEUpdateApplying runs
+# steamos-update apply + sm8550-relaunch-steam (ArmadaOS model).
+OOBE_NETWORK_NO_UPDATE = (
+    "Oobe.Network(),component:(0,i.jsx)(Tm,{})}]),[o])"
+)
+OOBE_NETWORK_WITH_UPDATE = (
+    "Oobe.Network(),component:(0,i.jsx)(Tm,{})},"
+    "{route:x.BV.GamepadUI.Oobe.Update(),component:(0,i.jsx)(Gm,{})}]),[o])"
+)
+# Factory images block /login until OOBE fully exits — even after SetOOBEComplete.
+OOBE_FACTORY_ROUTE_BLOCK = (
+    "BHasOOBEModeRouteBlock(e,t){if(this.GetOOBEComplete()&&!p.oy.IsDeckFactoryImage())return!1;"
+)
+OOBE_FACTORY_ROUTE_BLOCK_NEW = (
+    "BHasOOBEModeRouteBlock(e,t){if(this.GetOOBEComplete())return!1;"
+)
+OOBE_FACTORY_FEATURE_BLOCK = (
+    "BHasOOBEModeFeatureBlock(e){if(this.GetOOBEComplete()&&!p.oy.IsDeckFactoryImage())return!1;"
+)
+OOBE_FACTORY_FEATURE_BLOCK_NEW = (
+    "BHasOOBEModeFeatureBlock(e){if(this.GetOOBEComplete())return!1;"
+)
+# Gm passes {} to onComplete → Lp treats it as StartRestart (hang). Use false.
+OOBE_GM_DONE_OLD = "if(e!=ve.R)return void(r&&r());const n={};t(n)},[t,r])"
+OOBE_GM_DONE_NEW = "if(e!=ve.R)return void(r&&r());t(!1,i)},[t,r])"
+# EnsureOOOBEUpdateApplying only called onComplete when eresult==success; holo
+# reports restart-pending (not s.R) → infinite OOBE update spinner.
+OOBE_UPDATE_DONE_OLD = "e&&(p(r),r==C.R&&t(r,l.m_updateState.state))"
+OOBE_UPDATE_DONE_NEW = "e&&(p(r),r!=C.xr&&t(C.R,l.m_updateState.state))"
+# Client self-update is inhibited (steam.cfg) but UI still offers download/restart.
+CLIENT_UPDATE_MAP_OLD = "[k.iS]:Y,[k.ej]:Y,[k.Pj]:Y"
+CLIENT_UPDATE_MAP_NEW = (
+    "[k.iS]:function(e){return e.onRequestClose?.(),null},"
+    "[k.ej]:function(e){return e.onRequestClose?.(),null},"
+    "[k.Pj]:function(e){return e.onRequestClose?.(),null}"
+)
+CLIENT_UPDATE_OJ_OLD = (
+    '[k.oJ]:function(e){const{updater:t,onError:r,onRequestClose:n}=e,s=[{label:(0,y.we)("#ClientUpdate_Download"),'
+    'onClick:()=>t.ApplyUpdate(t.GetAvailableTypes(),({eResult:e})=>Promise.resolve(r({eResult:e,phase:"applying"})))},'
+    '{label:(0,y.we)("#ClientUpdate_Defer"),onClick:n}]'
+)
+CLIENT_UPDATE_OJ_NEW = (
+    '[k.oJ]:function(e){const{onRequestClose:n}=e;return n?.(),null;const{updater:t,onError:r}=e,s=[{label:(0,y.we)("#ClientUpdate_Download"),'
+    'onClick:()=>{}},{label:(0,y.we)("#ClientUpdate_Defer"),onClick:n}]'
+)
+# Lp: only restart on explicit flags, not truthy {}.
+LP_RESTART_OLD = (
+    "async(e,t)=>t?(console.warn(\"Restarting PC\"),r(!0),void SteamClient.System.RestartPC()):"
+    "e?(console.warn(\"Restarting Steam\"),r(!0),void SteamClient.User.StartRestart(!1)):"
+)
+LP_RESTART_NEW = (
+    "async(e,t)=>t?(console.warn(\"Restarting PC\"),r(!0),void SteamClient.System.RestartPC()):"
+    "(e===!0||e?.bRequireSteamRestart||e?.bRequireReboot)?"
+    "(console.warn(\"Restarting Steam\"),r(!0),void SteamClient.User.StartRestart(!1)):"
+)
+# Successful OS apply on factory/OOBE images sets bRequireReboot → Steam
+# wants a system reboot, reboot helper fails, retry loop. Drop both flags
+# so our steamos-update helper can relaunch Steam instead.
+OOBE_APPLY_REBOOT = (
+    "const n={};o.oy.IsDeckFactoryImage()||i==Em.ej?n.bRequireReboot=!0:"
+    "n.bRequireSteamRestart=!0,console.assert(n.bRequireReboot||n.bRequireSteamRestart),t(n)"
+)
+OOBE_APPLY_REBOOT_NEW = "t(!1,i)"
+OOBE_COMPLETE_OLD = (
+    "u=p.useCallback(async(e,r)=>{nl.op.SetOOBEComplete(),t(e,r)},[t])"
+)
+# Lp handler: async(e,t)=> t?reboot : e?StartRestart : login. Booleans only — {} is truthy!
+OOBE_COMPLETE_NEW = (
+    "u=p.useCallback(async(e,r)=>{await nl.op.SetOOBEComplete(),t(!1,r)},[t])"
+)
+OOBE_RESTART_UI_OLD = (
+    "u=p.useCallback(async(e,r)=>{await nl.op.SetOOBEComplete(),t({bRequireSteamRestart:!0},r)},[t])"
+)
+OOBE_RESTART_UI_NEW = (
+    "u=p.useCallback(async(e,r)=>{await nl.op.SetOOBEComplete(),t(!1,r)},[t])"
+)
+# Fix broken earlier patch that passed {} (truthy) → StartRestart hang.
+OOBE_COMPLETE_BROKEN = (
+    "u=p.useCallback(async(e,r)=>{await nl.op.SetOOBEComplete(),t({},r)},[t])"
+)
 
 # Exact leftovers from older steamui builds.
+# SM8550 deck-uhid reports type=unknown in virtualgamepadinfo; OSK haptics only
+# run when PlaySteamDeckHaptic finds a "Deck" controller type. Fall back to slot 0.
+OSK_HAPTIC_OLD = (
+    "PlaySteamDeckHaptic(e,t,r,i){const n=s.sY.GetControllers().find(e=>(0,s.rM)(e.eControllerType)"
+    "||(0,s.wJ)(e?.eControllerType));n&&this.PlayHaptic(n.nControllerIndex,e,t,r,i)}"
+)
+OSK_HAPTIC_NEW = (
+    "PlaySteamDeckHaptic(e,t,r,i){const cs=s.sY.GetControllers();const n=cs.find(e=>(0,s.rM)"
+    "(e.eControllerType)||(0,s.wJ)(e?.eControllerType))||cs[0];n&&this.PlayHaptic(n.nControllerIndex,e,t,r,i)}"
+)
+
+# PlayHaptic skips unknown types; SM8550 reports SteamOS Handheld as type=unknown.
+CONTROLLER_LIST_HANDHELD_OLD = (
+    "this.m_controllerList=t,e&&i.forEach(e=>{te(e.eControllerType)||re(e.eControllerType)"
+    "||B.Tu.ControllerConnectedNotification(e.nControllerIndex)})}"
+)
+CONTROLLER_LIST_HANDHELD_NEW = (
+    "this.m_controllerList=t,this.m_controllerList.forEach(e=>{e.strName&&/Handheld/i.test(e.strName)"
+    "&&(e.eControllerType=s.JW)}),e&&i.forEach(e=>{te(e.eControllerType)||re(e.eControllerType)"
+    "||B.Tu.ControllerConnectedNotification(e.nControllerIndex)})}"
+)
+
+PLAY_HAPTIC_OLD = (
+    "PlayHaptic(e,t,r,n,l=0){const c=s.sY.GetController(e);(0,s.rM)(c?.eControllerType)||(0,s.wJ)(c?.eControllerType)||c?"
+    '(a.Debug("Playing haptic",o[r],"on controllerIndex",e,{unIntensity:n,ndBGain:l}),'
+    "SteamClient.Input.TriggerSimpleHapticEvent(e,t,r,n,l)):c?.eControllerType==i.rb&&"
+    '(a.Debug("Playing legacy haptics",o[r],"on controllerIndex",e,{unIntensity:n,ndBGain:l}),'
+    "SteamClient.Input.TriggerHapticPulse(e,t,360,0))}"
+)
+PLAY_HAPTIC_OLD_LEGACY = (
+    "PlayHaptic(e,t,r,n,l=0){const c=s.sY.GetController(e);(0,s.rM)(c?.eControllerType)||(0,s.wJ)(c?.eControllerType)?"
+    '(a.Debug("Playing haptic",o[r],"on controllerIndex",e,{unIntensity:n,ndBGain:l}),'
+    "SteamClient.Input.TriggerSimpleHapticEvent(e,t,r,n,l)):c?.eControllerType==i.rb&&"
+    '(a.Debug("Playing legacy haptics",o[r],"on controllerIndex",e,{unIntensity:n,ndBGain:l}),'
+    "SteamClient.Input.TriggerHapticPulse(e,t,360,0))}"
+)
+PLAY_HAPTIC_NEW = (
+    "PlayHaptic(e,t,r,n,l=0){SteamClient.Input.ForceSimpleHapticEvent(e,t,r,n,l),"
+    "SteamClient.Input.TriggerSimpleHapticEvent(e,t,r,n,l)}"
+)
+
 EXACT = [
     (
         "SetAutoPairDeviceTypes(w){this.m_rgAutoPairDeviceTypes=w,this.m_rgAutoPairDeviceTypes.length",
@@ -77,7 +223,70 @@ for p in list(root.glob("chunk*.js")) + list(root.glob("library.js")):
             print(f"patched AppStore wait in {p.name}", file=sys.stderr)
     if "40===r.eresult&&!r.available" not in txt and OLD_CHECK in txt:
         txt = txt.replace(OLD_CHECK, NEW_CHECK, 1)
-        print(f"patched updater Blocked(40) in {p.name}", file=sys.stderr)
+        print(f"patched updater Blocked(40) check in {p.name}", file=sys.stderr)
+    if "GetMostSpecificApplyResult" in txt and OLD_APPLY in txt:
+        txt = txt.replace(OLD_APPLY, NEW_APPLY, 1)
+        print(f"patched updater Blocked(40) apply in {p.name}", file=sys.stderr)
+    if SA_OLD in txt and SA_NEW not in txt:
+        txt = txt.replace(SA_OLD, SA_NEW, 1)
+        print(f"disabled MandatoryUpdate takeover in {p.name}", file=sys.stderr)
+    if MANDATORY_OLD in txt and MANDATORY_NEW not in txt:
+        txt = txt.replace(MANDATORY_OLD, MANDATORY_NEW, 1)
+        print(f"disabled is_mandatory_update_available in {p.name}", file=sys.stderr)
+    if OOBE_NETWORK_NO_UPDATE in txt and OOBE_NETWORK_WITH_UPDATE not in txt:
+        txt = txt.replace(OOBE_NETWORK_NO_UPDATE, OOBE_NETWORK_WITH_UPDATE, 1)
+        print(f"inserted OOBE Update page after Network in {p.name}", file=sys.stderr)
+    if OOBE_FACTORY_ROUTE_BLOCK in txt:
+        txt = txt.replace(OOBE_FACTORY_ROUTE_BLOCK, OOBE_FACTORY_ROUTE_BLOCK_NEW, 1)
+        print(f"OOBE allow login after complete (factory image) in {p.name}", file=sys.stderr)
+    if OOBE_FACTORY_FEATURE_BLOCK in txt:
+        txt = txt.replace(OOBE_FACTORY_FEATURE_BLOCK, OOBE_FACTORY_FEATURE_BLOCK_NEW, 1)
+        print(f"OOBE feature allow after complete (factory) in {p.name}", file=sys.stderr)
+    if OOBE_GM_DONE_OLD in txt:
+        txt = txt.replace(OOBE_GM_DONE_OLD, OOBE_GM_DONE_NEW, 1)
+        print(f"OOBE update page no empty-object restart in {p.name}", file=sys.stderr)
+    if OOBE_UPDATE_DONE_OLD in txt:
+        txt = txt.replace(OOBE_UPDATE_DONE_OLD, OOBE_UPDATE_DONE_NEW, 1)
+        print(f"OOBE update complete unless hard error in {p.name}", file=sys.stderr)
+    if LP_RESTART_OLD in txt:
+        txt = txt.replace(LP_RESTART_OLD, LP_RESTART_NEW, 1)
+        print(f"OOBE Lp restart only on explicit flags in {p.name}", file=sys.stderr)
+    if CLIENT_UPDATE_MAP_OLD in txt:
+        txt = txt.replace(CLIENT_UPDATE_MAP_OLD, CLIENT_UPDATE_MAP_NEW, 1)
+        print(f"disabled client update pending states in {p.name}", file=sys.stderr)
+    if CLIENT_UPDATE_OJ_OLD in txt:
+        txt = txt.replace(CLIENT_UPDATE_OJ_OLD, CLIENT_UPDATE_OJ_NEW, 1)
+        print(f"disabled client update download prompt in {p.name}", file=sys.stderr)
+    if OOBE_APPLY_REBOOT in txt:
+        txt = txt.replace(OOBE_APPLY_REBOOT, OOBE_APPLY_REBOOT_NEW, 1)
+        print(f"OOBE apply no system reboot in {p.name}", file=sys.stderr)
+    if OOBE_COMPLETE_OLD in txt and OOBE_COMPLETE_NEW not in txt:
+        txt = txt.replace(OOBE_COMPLETE_OLD, OOBE_COMPLETE_NEW, 1)
+        print(f"OOBE stage1 no StartRestart in {p.name}", file=sys.stderr)
+    if OOBE_COMPLETE_BROKEN in txt:
+        txt = txt.replace(OOBE_COMPLETE_BROKEN, OOBE_COMPLETE_NEW, 1)
+        print(f"fixed OOBE empty-object truthy bug in {p.name}", file=sys.stderr)
+    if OOBE_RESTART_UI_OLD in txt:
+        txt = txt.replace(OOBE_RESTART_UI_OLD, OOBE_RESTART_UI_NEW, 1)
+        print(f"removed StartRestart from OOBE stage1 in {p.name}", file=sys.stderr)
+    OOBE_AWAIT_OLD = (
+        "u=p.useCallback(async(e,r)=>{nl.op.SetOOBEComplete(),t({bRequireSteamRestart:!0},r)},[t])"
+    )
+    if OOBE_AWAIT_OLD in txt:
+        txt = txt.replace(OOBE_AWAIT_OLD, OOBE_RESTART_UI_NEW, 1)
+        print(f"OOBE stage1 await + no StartRestart in {p.name}", file=sys.stderr)
+    if OSK_HAPTIC_OLD in txt and "||cs[0]" not in txt:
+        txt = txt.replace(OSK_HAPTIC_OLD, OSK_HAPTIC_NEW, 1)
+        print(f"OSK haptic fallback to controller slot 0 in {p.name}", file=sys.stderr)
+    if CONTROLLER_LIST_HANDHELD_OLD in txt and "e.eControllerType=s.JW" not in txt:
+        txt = txt.replace(CONTROLLER_LIST_HANDHELD_OLD, CONTROLLER_LIST_HANDHELD_NEW, 1)
+        print(f"OSK haptic: map SteamOS Handheld to s.JW in {p.name}", file=sys.stderr)
+    if PLAY_HAPTIC_OLD in txt and "ForceSimpleHapticEvent" not in txt.split("PlayHaptic(e,t,r,n,l=0)", 1)[1][:80]:
+        txt = txt.replace(PLAY_HAPTIC_OLD, PLAY_HAPTIC_NEW, 1)
+        print(f"OSK haptic: ForceSimpleHapticEvent in {p.name}", file=sys.stderr)
+    elif PLAY_HAPTIC_OLD_LEGACY in txt and "ForceSimpleHapticEvent" not in txt.split("PlayHaptic(e,t,r,n,l=0)", 1)[1][:80]:
+        txt = txt.replace(PLAY_HAPTIC_OLD_LEGACY, PLAY_HAPTIC_NEW, 1)
+        print(f"OSK haptic: ForceSimpleHapticEvent (legacy PlayHaptic) in {p.name}", file=sys.stderr)
     for old, new in EXACT:
         if old in txt:
             txt = txt.replace(old, new)

@@ -1,0 +1,21 @@
+#!/bin/bash
+# Open the Steam on-screen keyboard (desktop mode). Steam must be running.
+set -euo pipefail
+
+steam_root="${HOME:-/home/steamos}/.local/share/Steam"
+rm -f "${steam_root}/.crash" 2>/dev/null || true
+
+steam_bin="${STEAM_EXECUTABLE:-}"
+if [[ -z "$steam_bin" ]]; then
+  for candidate in \
+    "${steam_root}/steamrtarm64/steam" \
+    "${HOME}/.steam/root/steamrtarm64/steam"; do
+    if [[ -x "$candidate" ]]; then
+      steam_bin="$candidate"
+      break
+    fi
+  done
+fi
+steam_bin="${steam_bin:-steam}"
+
+exec "$steam_bin" -ifrunning steam://open/keyboard

@@ -1,0 +1,9 @@
+#!/bin/bash
+# SM8550 wrapper: force host fusermount3 for revokefs unmount (Discover/Flathub).
+set -euo pipefail
+REAL="/usr/lib/steamos/flatpak.bin"
+[[ -x "$REAL" ]] || REAL="/usr/bin/flatpak.real"
+[[ -x "$REAL" ]] || REAL="/usr/bin/flatpak"
+# shellcheck source=/dev/null
+source /usr/lib/steamos/sm8550-flatpak-env
+exec "$REAL" "$@"

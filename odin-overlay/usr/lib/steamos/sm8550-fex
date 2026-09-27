@@ -1,0 +1,75 @@
+#!/bin/bash
+# Valve FEX-Emu + Frame RootFS. Do not pre-start FEXServer (FEX does that;
+# a second server as root on /run/user/1000 hangs the interpreter).
+set -u
+
+FEX_ROOTFS="${FEX_ROOTFS:-/usr/share/guestos/fex-mesa}"
+HOME_DIR="${HOME:-/home/steamos}"
+export HOME="${HOME_DIR}"
+export USER="${USER:-steamos}"
+export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-${HOME_DIR}/.config}"
+export XDG_DATA_HOME="${XDG_DATA_HOME:-${HOME_DIR}/.local/share}"
+# Root must not share the user runtime dir. FEXServer sockets live here.
+export XDG_RUNTIME_DIR="${FEX_RUNTIME_DIR:-/run/fex-decky}"
+export FEX_ROOTFS
+export FEX_PORTABLE="${FEX_PORTABLE:-1}"
+
+LOG="${HOME_DIR}/.local/share/sm8550-fex.log"
+mkdir -p "${HOME_DIR}/.local/share" "${XDG_RUNTIME_DIR}" 2>/dev/null || true
+chmod 0700 "${XDG_RUNTIME_DIR}" 2>/dev/null || true
+
+find_fex_dir() {
+  local d
+  for d in \
+    "${HOME_DIR}/.local/share/Steam/steamapps/common/FEX-Emu" \
+    "${HOME_DIR}/.steam/steam/steamapps/common/FEX-Emu" \
+    /home/steamos/.local/share/Steam/steamapps/common/FEX-Emu \
+    /home/steamos/.steam/steam/steamapps/common/FEX-Emu
+  do
+    if [[ -x "${d}/usr/bin/FEX" || -x "${d}/usr/bin/FEXInterpreter" ]]; then
+      printf '%s\n' "$d"
+      return 0
+    fi
+  done
+  return 1
+}
+
+FEX_DIR="$(find_fex_dir || true)"
+if [[ -z "${FEX_DIR}" ]]; then
+  echo "sm8550-fex: Valve FEX-Emu is not installed yet" >&2
+  echo "$(date -Iseconds) missing FEX-Emu" >>"$LOG" 2>/dev/null || true
+  exit 127
+fi
+if [[ ! -d "$FEX_ROOTFS" ]]; then
+  echo "sm8550-fex: missing RootFS $FEX_ROOTFS" >&2
+  echo "$(date -Iseconds) missing RootFS $FEX_ROOTFS" >>"$LOG" 2>/dev/null || true
+  exit 127
+fi
+
+if [[ -x "${FEX_DIR}/usr/bin/FEXInterpreter" ]]; then
+  INTERP="${FEX_DIR}/usr/bin/FEXInterpreter"
+else
+  INTERP="${FEX_DIR}/usr/bin/FEX"
+fi
+
+if [[ -d "${FEX_DIR}/usr/lib/aarch64-linux-gnu/fex-emu/HostThunks" ]]; then
+  export FEX_THUNKHOSTLIBS="${FEX_DIR}/usr/lib/aarch64-linux-gnu/fex-emu/HostThunks"
+fi
+if [[ -d "${FEX_DIR}/usr/share/fex-emu/GuestThunks" ]]; then
+  export FEX_THUNKGUESTLIBS="${FEX_DIR}/usr/share/fex-emu/GuestThunks"
+fi
+if [[ -d "${FEX_DIR}/usr/lib/aarch64-linux-gnu" ]]; then
+  export LD_LIBRARY_PATH="${FEX_DIR}/usr/lib/aarch64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+fi
+
+mkdir -p "${HOME_DIR}/.fex-emu"
+printf '%s\n' "{\"Config\":{\"RootFS\":\"${FEX_ROOTFS}\",\"ThunkHostLibs\":\"${FEX_THUNKHOSTLIBS:-}\",\"ThunkGuestLibs\":\"${FEX_THUNKGUESTLIBS:-}\",\"SilentLog\":\"0\",\"OutputLog\":\"${HOME_DIR}/homebrew/logs/fex-emu.log\"},\"ThunksDB\":{}}" \
+  >"${HOME_DIR}/.fex-emu/Config.json"
+chown 1000:1000 "${HOME_DIR}/.fex-emu" "${HOME_DIR}/.fex-emu/Config.json" 2>/dev/null || true
+
+echo "$(date -Iseconds) exec ${INTERP} runtime=${XDG_RUNTIME_DIR} -- $*" >>"$LOG" 2>/dev/null || true
+set +e
+"$INTERP" "$@" >>"$LOG" 2>&1
+ec=$?
+echo "$(date -Iseconds) fex exit=${ec}" >>"$LOG" 2>/dev/null || true
+exit "$ec"

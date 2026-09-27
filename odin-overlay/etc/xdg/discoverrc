@@ -1,0 +1,3 @@
+# SM8550 images have no RAUC/atomupd payload. Hide the ghost SteamOS OTA row.
+[Addons]
+Exclude=org.kde.discover.steamosbackend

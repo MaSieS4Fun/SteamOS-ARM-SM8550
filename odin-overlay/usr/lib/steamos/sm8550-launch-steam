@@ -1,0 +1,140 @@
+#!/usr/bin/env bash
+# Launch native ARM Steam for SM8550 handheld (Ubuntu launch-steam model).
+# Session relaunch is handled by gamescope-session (-R cycle) when this exits.
+set -euo pipefail
+
+# Never launch from a dev host with STEAM_HOME on a mounted image — breaks ~/.steam.
+if [[ "${HOME:-}" == *"/run/media/"* ]] || [[ "${STEAM_HOME:-}" == *"/run/media/"* ]]; then
+  echo "ERROR: sm8550-launch-steam refused (HOME/STEAM_HOME looks like mounted SD on dev PC)" >&2
+  exit 1
+fi
+
+if [[ -x /usr/lib/steamos/sm8550-ensure-steam-home ]]; then
+  /usr/lib/steamos/sm8550-ensure-steam-home "${HOME}" || true
+fi
+
+steam_root="${STEAM_ROOT:-${HOME}/.local/share/Steam}"
+steam_arm_dir="${steam_root}/steamrtarm64"
+steam_arm="${steam_arm_dir}/steam"
+steam_shim_dir="${steam_root}/lib/aarch64-linux-gnu"
+steam_runtime_bin="${steam_root}/steam-runtime-steamrt-arm64/bin"
+
+if [[ ! -x "${steam_arm}" ]]; then
+  echo "ERROR: ARM Steam missing: ${steam_arm}" >&2
+  exit 127
+fi
+
+steam_ld_path="${steam_arm_dir}"
+if [[ -d "${steam_shim_dir}" ]]; then
+  steam_ld_path="${steam_ld_path}:${steam_shim_dir}"
+fi
+export LD_LIBRARY_PATH="${steam_ld_path}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+if [[ -d "${steam_runtime_bin}" ]]; then
+  export PATH="${steam_runtime_bin}:${PATH}"
+fi
+
+export SteamDeck="${SteamDeck:-1}"
+export SDL_GAMECONTROLLERCONFIG_FILE="${SDL_GAMECONTROLLERCONFIG_FILE:-/etc/sdl2/qcom-gamecontrollerdb.txt}"
+# deck-uhid already emulates a Deck pad; virtual=1 often doubles axes (drift / stuck stick).
+export SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD="${SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD:-0}"
+export SDL_VIDEO_X11_DGAMOUSE=0
+
+export _STEAM_SETENV_MANAGER=1
+if [[ -z "${GAMESCOPE_WAYLAND_DISPLAY:-}" ]]; then
+  if [[ -S "${XDG_RUNTIME_DIR}/gamescope-0" ]]; then
+    export GAMESCOPE_WAYLAND_DISPLAY=gamescope-0
+  elif [[ -n "${XDG_RUNTIME_DIR:-}" ]]; then
+    for sock in "${XDG_RUNTIME_DIR}"/gamescope-*; do
+      [[ -S "$sock" ]] || continue
+      export GAMESCOPE_WAYLAND_DISPLAY="$(basename "$sock")"
+      break
+    done
+  fi
+fi
+unset WAYLAND_DISPLAY XDG_SESSION_TYPE || true
+
+# MangoHud env is for mangoapp sibling only — not Steam (control=mangohud breaks QAM z-order).
+if [[ -x /usr/lib/steamos/sm8550-mango-config ]]; then
+  # shellcheck disable=SC1091
+  source /usr/lib/steamos/sm8550-mango-config
+  sm8550_mango_ensure_configs
+fi
+unset MANGOHUD_CONFIGFILE MANGOHUD_PRESETSFILE MANGOHUD_CONFIG || true
+
+if [[ -d "${steam_root}/package" ]]; then
+  echo "${STEAM_ARM_CHANNEL:-steamdeck_publicbeta}" > "${steam_root}/package/beta" 2>/dev/null || true
+fi
+
+write_arm_bootstrap_inhibit() {
+  local dest
+  for dest in "${steam_root}/steam.cfg" "${steam_arm_dir}/steam.cfg"; do
+    mkdir -p "$(dirname "$dest")" 2>/dev/null || true
+    printf '%s\n' \
+      'BootStrapperInhibitAll=enable' \
+      'BootStrapperForceSelfUpdate=disable' \
+      'BootStrapperInhibitClientChecksum=enable' \
+      'BootStrapperInhibitBootstrapperChecksum=enable' \
+      'BootStrapperInhibitUpdateOnLaunch=enable' \
+      >"$dest" 2>/dev/null || true
+  done
+}
+write_arm_bootstrap_inhibit
+
+ensure_steam_inf() {
+  if [[ -s "${steam_root}/steam.inf" ]]; then
+    return 0
+  fi
+  local ver=1788652215
+  if [[ -r "${steam_root}/.odin-handheld-client" ]]; then
+    ver="$(awk 'NR==2 && /^[0-9]+$/{print; exit}' "${steam_root}/.odin-handheld-client")"
+  fi
+  printf 'ClientVersion=%s\n' "${ver:-1788652215}" >"${steam_root}/steam.inf"
+  cp -f "${steam_root}/steam.inf" "${steam_arm_dir}/steam.inf" 2>/dev/null || true
+}
+ensure_steam_inf
+
+if [[ -x /usr/lib/steamos/sm8550-patch-steamui ]]; then
+  /usr/lib/steamos/sm8550-patch-steamui "${steam_root}/steamui" >/dev/null 2>&1 || true
+fi
+
+rm -f \
+  "${HOME}/.steam/steam.pid" \
+  "${HOME}/.steam/steam.token" \
+  "${HOME}/.steampid" \
+  "${steam_root}/steam.pid" \
+  "${steam_root}/.steam.pid" \
+  "${steam_root}/.crash" \
+  2>/dev/null || true
+
+if command -v dbus-update-activation-environment >/dev/null 2>&1; then
+  dbus-update-activation-environment \
+    DISPLAY GAMESCOPE_WAYLAND_DISPLAY XDG_RUNTIME_DIR XDG_CURRENT_DESKTOP \
+    DBUS_SESSION_BUS_ADDRESS SteamDeck STEAM_USE_MANGOAPP \
+    STEAM_GAMESCOPE_FANCY_SCALING_SUPPORT STEAM_GAMESCOPE_DYNAMIC_FPSLIMITER \
+    SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD \
+    2>/dev/null || dbus-update-activation-environment --all 2>/dev/null || true
+fi
+
+echo "sm8550-launch-steam: GAMESCOPE_WAYLAND_DISPLAY=${GAMESCOPE_WAYLAND_DISPLAY:-UNSET} DISPLAY=${DISPLAY:-UNSET}"
+
+steam_default_args=(
+  -gamepadui
+  -steamos3
+  -steampal
+  -steamdeck
+  -noverifyfiles
+  -noshaders
+  -inhibitbootstrap
+  -nobootstrapperupdate
+)
+steam_user_args=()
+for arg in "$@"; do
+  case "$arg" in
+    -inhibitbootstrap|-nobootstrapperupdate) continue ;;
+    *) steam_user_args+=("$arg") ;;
+  esac
+done
+
+cd "${steam_arm_dir}"
+unset LD_PRELOAD || true
+exec "${steam_arm}" "${steam_default_args[@]}" "${steam_user_args[@]}"

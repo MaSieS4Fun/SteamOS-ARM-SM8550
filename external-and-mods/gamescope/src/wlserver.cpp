@@ -1794,9 +1794,20 @@ gamescope_xwayland_server_t::gamescope_xwayland_server_t(wl_display *display)
 	output_state = new wlr_output_state;
 	wlr_output_state_init(output_state);
 
-	output->make = strdup("gamescope");  // freed by wlroots
-	output->model = strdup("gamescope"); // freed by wlroots
-	wlr_output_set_name(output, "gamescope");
+	// Steam Gamepad UI saves "External: gamescope 8\"|||Windowed" and routes QAM
+	// behind the game. SM8550 session sets GAMESCOPE_SM8550_STEAM_INTERNAL_X11=1.
+	if ( getenv( "GAMESCOPE_SM8550_STEAM_INTERNAL_X11" ) )
+	{
+		output->make = strdup( "Valve" );
+		output->model = strdup( "Steam Deck" );
+		wlr_output_set_name( output, "DSI-1" );
+	}
+	else
+	{
+		output->make = strdup( "gamescope" );  // freed by wlroots
+		output->model = strdup( "gamescope" ); // freed by wlroots
+		wlr_output_set_name( output, "gamescope" );
+	}
 
 	int refresh = g_nNestedRefresh;
 	if (refresh == 0) {

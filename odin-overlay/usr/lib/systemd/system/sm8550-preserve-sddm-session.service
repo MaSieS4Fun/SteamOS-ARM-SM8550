@@ -1,0 +1,6 @@
+[Unit]
+Description=Preserve SteamOS Manager temporary SDDM session
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/steamos/sm8550-preserve-sddm-session

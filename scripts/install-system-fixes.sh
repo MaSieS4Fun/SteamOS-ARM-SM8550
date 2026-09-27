@@ -80,9 +80,7 @@ fi
 # ── LSFG-VK: from external-and-mods/system-fixes/LSFG-VK ──
 log "LSFG-VK plugin_loader drop-ins"
 LSFG="${MOD}/system-fixes/LSFG-VK/plugin_loader.service.d"
-mkdir -p "$R/usr/share/steamos-odin/plugin_loader.service.d" \
-  "$R/etc/systemd/system/plugin_loader.service.d" \
-  "$R/usr/lib/systemd/system/plugin_loader.service.d"
+mkdir -p "$R/usr/share/steamos-odin/plugin_loader.service.d"
 rewrite_home() {
   local src="$1" dest="$2"
   python3 - "$src" "$dest" <<'PY'
@@ -103,22 +101,24 @@ for drop in fast-stop.conf fex-steam-rootfs.conf; do
   fi
   [[ -f "$src" ]] || continue
   rewrite_home "$src" "$R/usr/share/steamos-odin/plugin_loader.service.d/${drop}"
-  rewrite_home "$src" "$R/etc/systemd/system/plugin_loader.service.d/${drop}"
-  rewrite_home "$src" "$R/usr/lib/systemd/system/plugin_loader.service.d/${drop}"
 done
+install -D -m 0644 "$OVL/usr/lib/systemd/user/sm8550-plugin-loader.service" \
+  "$R/usr/lib/systemd/user/sm8550-plugin-loader.service"
+mkdir -p "$R/usr/lib/systemd/user/sm8550-plugin-loader.service.d"
+rewrite_home "${LSFG}/fast-stop.conf" \
+  "$R/usr/lib/systemd/user/sm8550-plugin-loader.service.d/fast-stop.conf"
+# The old root service is not tied to the Gamescope session, so LSFG children
+# survive desktop switches. Decky is started by gamescope-onready as a user
+# service instead.
+rm -f "$R/usr/lib/systemd/system/plugin_loader.service" \
+  "$R/etc/systemd/system/plugin_loader.service" \
+  "$R/etc/systemd/system/multi-user.target.wants/plugin_loader.service"
+rm -rf "$R/etc/systemd/system/plugin_loader.service.d" \
+  "$R/usr/lib/systemd/system/plugin_loader.service.d" \
+  "$R/var/lib/overlays/etc/upper/systemd/system/plugin_loader.service.d"
 if [[ -f "$OVL/usr/share/steamos-odin/plugin_loader.service.d/sm8550.conf" ]]; then
   install -m 0644 "$OVL/usr/share/steamos-odin/plugin_loader.service.d/sm8550.conf" \
     "$R/usr/share/steamos-odin/plugin_loader.service.d/sm8550.conf"
-  install -m 0644 "$OVL/usr/share/steamos-odin/plugin_loader.service.d/sm8550.conf" \
-    "$R/etc/systemd/system/plugin_loader.service.d/sm8550.conf"
-  install -m 0644 "$OVL/usr/share/steamos-odin/plugin_loader.service.d/sm8550.conf" \
-    "$R/usr/lib/systemd/system/plugin_loader.service.d/sm8550.conf"
-fi
-if [[ -d "$R/var/lib/overlays/etc/upper" ]]; then
-  mkdir -p "$R/var/lib/overlays/etc/upper/systemd/system/plugin_loader.service.d" 2>/dev/null \
-    && cp -a "$R/etc/systemd/system/plugin_loader.service.d/." \
-      "$R/var/lib/overlays/etc/upper/systemd/system/plugin_loader.service.d/" \
-    || log "WARN: etc overlay upper not writable for plugin_loader drop-ins"
 fi
 
 # ── Thor: stage detector + binaries. Apply the touch fix only on AYN Thor.
@@ -232,9 +232,27 @@ install -m 0644 "$OVL/etc/skel/Desktop/Return.desktop" \
   "$R/etc/skel/Desktop/Return.desktop"
 install -m 0755 "$OVL/etc/xdg/plasma-workspace/env/set-return-icon.sh" \
   "$R/etc/xdg/plasma-workspace/env/set-return-icon.sh"
+# Do not inject Steam input modules into Plasma's global environment and do not
+# launch a second Steam client.  Both make Plasma abort during the Game Mode
+# transition on this image.  The stock Plasma session starts Steam -silent.
+rm -f \
+  "$R/etc/xdg/plasma-workspace/env/sm8550-plasma-im.sh" \
+  "$R/etc/xdg/plasma-workspace/env/sm8550-plasma-portal-perms.sh" \
+  "$R/var/lib/overlays/etc/upper/xdg/plasma-workspace/env/sm8550-plasma-im.sh" \
+  "$R/var/lib/overlays/etc/upper/xdg/plasma-workspace/env/sm8550-plasma-portal-perms.sh" \
+  "$R/usr/lib/systemd/user/sm8550-plasma-steam.service" \
+  "$R/usr/lib/systemd/user/plasma-workspace.target.wants/sm8550-plasma-steam.service"
+install -m 0644 "$OVL/etc/xdg/autostart/ibus.desktop" \
+  "$R/etc/xdg/autostart/ibus.desktop"
 persist_etc "skel/Desktop/Return.desktop" "$OVL/etc/skel/Desktop/Return.desktop" 0644
 persist_etc "xdg/plasma-workspace/env/set-return-icon.sh" \
   "$OVL/etc/xdg/plasma-workspace/env/set-return-icon.sh" 0755
+if [[ -f "$OVL/etc/xdg/kwinoutputconfig.json" ]]; then
+  install -m 0644 "$OVL/etc/xdg/kwinoutputconfig.json" "$R/etc/xdg/kwinoutputconfig.json"
+  persist_etc "xdg/kwinoutputconfig.json" "$OVL/etc/xdg/kwinoutputconfig.json" 0644
+fi
+persist_etc "xdg/autostart/ibus.desktop" \
+  "$OVL/etc/xdg/autostart/ibus.desktop" 0644
 install -m 0644 "$OVL/usr/share/icons/hicolor/scalable/apps/steamos-gamemode.svg" \
   "$R/usr/share/icons/hicolor/scalable/apps/steamos-gamemode.svg"
 install -m 0644 "$OVL/etc/skel/Desktop/Return.desktop" \

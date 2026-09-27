@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Install Decky PluginLoader on SteamOS Frame (aarch64).
-# PluginLoader is x86_64 — systemd must start it via Box64/FEX, not raw binfmt.
+# PluginLoader is x86_64 — systemd starts it via Box64 (not global FEX).
 # Steam Client channel (not SteamOS) selects Decky's update branch:
 #   Steam Client stable → loader.json branch 0
 #   Steam Client beta   → loader.json branch 1
@@ -40,9 +40,7 @@ HOMEBREW_ROOT="${REAL_HOME}/homebrew"
 PLUGIN_LOADER="${HOMEBREW_ROOT}/services/PluginLoader"
 LOADER_VERSION_FILE="${HOMEBREW_ROOT}/services/.loader.version"
 LOADER_SETTINGS="${HOMEBREW_ROOT}/settings/loader.json"
-PLUGIN_UNIT_USR="/usr/lib/systemd/system/plugin_loader.service"
-PLUGIN_UNIT_ETC="/etc/systemd/system/plugin_loader.service"
-SYSTEM_DROPINS="/usr/share/steamos-odin/plugin_loader.service.d"
+PLUGIN_USER_UNIT="/usr/lib/systemd/user/sm8550-plugin-loader.service"
 BUNDLE_ROOT="/usr/share/steamos-odin/decky-plugins"
 DECKY_LOADER_REPO="SteamDeckHomebrew/decky-loader"
 DECKY_BRANCH="${DECKY_BRANCH:-}"
@@ -54,40 +52,96 @@ systemctl_root() {
 
 box64_detected() {
   command -v box64 >/dev/null 2>&1 && return 0
-  [[ -f /etc/binfmt.d/box64.conf || -f /usr/lib/binfmt.d/box64.conf ]] && return 0
   [[ -x /usr/local/bin/box64 || -x /usr/bin/box64 ]] && return 0
+  [[ -f /etc/binfmt.d/box64.conf || -f /usr/lib/binfmt.d/box64.conf ]] && return 0
   return 1
 }
 
-fex_detected() {
-  command -v FEX >/dev/null 2>&1 && return 0
-  [[ -f /usr/lib/binfmt.d/FEX-x86_64.conf ]] && return 0
-  return 1
+ensure_box64() {
+  if box64_detected; then
+    log "Box64 present: $(command -v box64 2>/dev/null || echo /usr/local/bin/box64)"
+    return 0
+  fi
+  if [[ -x /usr/bin/update-box64 ]]; then
+    log "Box64 missing — building via update-box64 (5-15 min)..."
+    /usr/bin/update-box64 install
+  else
+    log "Box64 missing — building from upstream (5-15 min)..."
+    for cmd in git cmake make gcc g++; do
+      command -v "$cmd" >/dev/null || die "Missing $cmd for box64 build"
+    done
+    local work="/tmp/box64-build-$$"
+    rm -rf "$work"
+    git clone --recursive --depth 1 https://github.com/ptitSeb/box64 "$work/src"
+    cmake -S "$work/src" -B "$work/build" -DSD8G2=1 -DCMAKE_BUILD_TYPE=RelWithDebInfo
+    cmake --build "$work/build" -j"$(nproc)"
+    cmake --install "$work/build"
+    rm -rf "$work"
+  fi
+  systemctl_root restart systemd-binfmt 2>/dev/null || true
+  box64_detected || die "box64 build failed"
+}
+
+deploy_box64_wrapper() {
+  local src="/usr/lib/steamos/sm8550-plugin-loader"
+  if [[ -f /usr/share/steamos-odin/sm8550-plugin-loader ]]; then
+    install -D -m0755 /usr/share/steamos-odin/sm8550-plugin-loader "$src"
+  else
+    install -D -m0755 /dev/stdin "$src" <<'EOF'
+#!/bin/bash
+set -u
+LOADER="${1:-/home/steamos/homebrew/services/PluginLoader}"
+LOGDIR="/home/steamos/homebrew/logs"
+mkdir -p "$LOGDIR" 2>/dev/null || true
+LOG="${LOGDIR}/plugin_loader-box64.log"
+export HOME="${HOME:-/home/steamos}"
+export USER="${USER:-steamos}"
+export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-/home/steamos/.config}"
+export XDG_DATA_HOME="${XDG_DATA_HOME:-/home/steamos/.local/share}"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/1000}"
+for b in /usr/local/bin/box64 /usr/bin/box64; do
+  [[ -x "$b" ]] && exec "$b" "$LOADER" >>"$LOG" 2>&1
+done
+command -v box64 >/dev/null 2>&1 && exec box64 "$LOADER" >>"$LOG" 2>&1
+echo "sm8550-plugin-loader: box64 missing" >&2
+exit 127
+EOF
+  fi
+  log "Deployed $src (Box64)"
+}
+
+cleanup_fex_global_binfmt() {
+  if [[ -x /usr/lib/steamos/sm8550-fex-binfmt ]]; then
+    /usr/lib/steamos/sm8550-fex-binfmt || true
+  fi
+  systemctl_root disable --now sm8550-fex-binfmt.path 2>/dev/null || true
+  rm -f /etc/systemd/system/multi-user.target.wants/sm8550-fex-binfmt.path \
+    /var/lib/overlays/etc/upper/systemd/system/multi-user.target.wants/sm8550-fex-binfmt.path \
+    /usr/lib/systemd/system/sm8550-fex-binfmt.path 2>/dev/null || true
+  log "Global FEX binfmt removed (FEX stays Steam/Proton-only)"
+}
+
+prepare_decky_runtime() {
+  ensure_box64
+  deploy_box64_wrapper
+  cleanup_fex_global_binfmt
 }
 
 require_emulator() {
-  if box64_detected; then
-    log "Box64 detected"
-    return 0
-  fi
-  if fex_detected; then
-    warn "Only FEXEmu detected — Box64 is recommended"
-    return 0
-  fi
-  die "Decky needs Box64 or FEXEmu to run the x86_64 PluginLoader"
+  prepare_decky_runtime
 }
 
 emulator_bin() {
-  if [[ -x /usr/bin/box64 ]]; then
-    printf '%s' /usr/bin/box64
+  if [[ -x /usr/lib/steamos/sm8550-plugin-loader ]]; then
+    printf '%s' /usr/lib/steamos/sm8550-plugin-loader
     return 0
   fi
   if [[ -x /usr/local/bin/box64 ]]; then
     printf '%s' /usr/local/bin/box64
     return 0
   fi
-  if command -v FEX >/dev/null 2>&1; then
-    command -v FEX
+  if command -v box64 >/dev/null 2>&1; then
+    command -v box64
     return 0
   fi
   return 1
@@ -181,30 +235,23 @@ for r in rels:
   printf '%s\n%s\n' "$version" "$url"
 }
 
-write_plugin_loader_unit() {
-  local dest="$1" emu start
-  emu="$(emulator_bin || true)"
-  if [[ -n "$emu" ]]; then
-    start="${emu} ${PLUGIN_LOADER}"
-  else
-    start="${PLUGIN_LOADER}"
-  fi
+write_plugin_loader_user_unit() {
+  local dest="$1"
   mkdir -p "$(dirname "$dest")"
   cat >"$dest" <<EOF
 [Unit]
-Description=SteamDeck Plugin Loader
-After=network-online.target systemd-binfmt.service local-fs.target home.mount
-Wants=systemd-binfmt.service
+Description=Decky PluginLoader for the Gamescope session
+PartOf=gamescope-session.target
 
 [Service]
 Type=simple
-User=root
-Restart=always
+ExecStart=/usr/lib/steamos/sm8550-plugin-loader ${PLUGIN_LOADER}
+Restart=on-failure
 RestartSec=5
 KillMode=control-group
-TimeoutStopSec=8
-ExecStart=${start}
-WorkingDirectory=${HOMEBREW_ROOT}/services
+TimeoutStopSec=5
+FinalKillSignal=SIGKILL
+SendSIGKILL=yes
 Environment=UNPRIVILEGED_PATH=${HOMEBREW_ROOT}
 Environment=PRIVILEGED_PATH=${HOMEBREW_ROOT}
 Environment=LOG_LEVEL=INFO
@@ -213,44 +260,48 @@ Environment=USER=${REAL_USER}
 Environment=XDG_CONFIG_HOME=${REAL_HOME}/.config
 Environment=XDG_DATA_HOME=${REAL_HOME}/.local/share
 Environment=XDG_RUNTIME_DIR=/run/user/${REAL_UID}
-Environment=BOX64_NOBANNER=1
-
-[Install]
-WantedBy=multi-user.target
 EOF
   chmod 0644 "$dest"
 }
 
-persist_unit() {
-  write_plugin_loader_unit "$PLUGIN_UNIT_USR"
-  write_plugin_loader_unit "$PLUGIN_UNIT_ETC"
-  mkdir -p /etc/systemd/system/multi-user.target.wants
-  ln -sfn "$PLUGIN_UNIT_USR" /etc/systemd/system/multi-user.target.wants/plugin_loader.service
+user_systemctl() {
+  local runtime="/run/user/${REAL_UID}"
+  [[ -S "${runtime}/bus" ]] || return 1
+  runuser -u "$REAL_USER" -- env \
+    HOME="$REAL_HOME" USER="$REAL_USER" XDG_RUNTIME_DIR="$runtime" \
+    DBUS_SESSION_BUS_ADDRESS="unix:path=${runtime}/bus" \
+    systemctl --user "$@"
+}
+
+remove_legacy_system_loader() {
+  systemctl_root disable --now plugin_loader.service 2>/dev/null || true
+  rm -f \
+    /usr/lib/systemd/system/plugin_loader.service \
+    /etc/systemd/system/plugin_loader.service \
+    /etc/systemd/system/multi-user.target.wants/plugin_loader.service
+  rm -rf \
+    /usr/lib/systemd/system/plugin_loader.service.d \
+    /etc/systemd/system/plugin_loader.service.d
   if [[ -d "$OVERLAY_ETC" ]]; then
-    mkdir -p "$OVERLAY_ETC/systemd/system/multi-user.target.wants" \
-      "$OVERLAY_ETC/systemd/system/plugin_loader.service.d" || true
-    write_plugin_loader_unit "$OVERLAY_ETC/systemd/system/plugin_loader.service" || true
-    ln -sfn "$PLUGIN_UNIT_USR" \
-      "$OVERLAY_ETC/systemd/system/multi-user.target.wants/plugin_loader.service" || true
+    rm -f \
+      "$OVERLAY_ETC/systemd/system/plugin_loader.service" \
+      "$OVERLAY_ETC/systemd/system/multi-user.target.wants/plugin_loader.service"
+    rm -rf "$OVERLAY_ETC/systemd/system/plugin_loader.service.d"
   fi
 }
 
-apply_dropins() {
-  local drop src dest ovl
-  install -d -m 0755 /etc/systemd/system/plugin_loader.service.d
-  for drop in fast-stop.conf fex-steam-rootfs.conf sm8550.conf; do
-    src=""
-    [[ -f "${SYSTEM_DROPINS}/${drop}" ]] && src="${SYSTEM_DROPINS}/${drop}"
-    [[ -n "$src" ]] || continue
-    dest="/etc/systemd/system/plugin_loader.service.d/${drop}"
-    # Paths already use /home/steamos; copy as-is (no sed).
-    install -m 0644 "$src" "$dest"
-    if [[ -d "$OVERLAY_ETC" ]]; then
-      ovl="$OVERLAY_ETC/systemd/system/plugin_loader.service.d"
-      mkdir -p "$ovl" 2>/dev/null && install -m 0644 "$src" "$ovl/${drop}" || true
-    fi
-    log "Installed drop-in ${drop}"
-  done
+persist_unit() {
+  write_plugin_loader_user_unit "$PLUGIN_USER_UNIT"
+  remove_legacy_system_loader
+
+  mkdir -p /etc/systemd/user/gamescope-session.target.wants
+  ln -sfn "$PLUGIN_USER_UNIT" \
+    /etc/systemd/user/gamescope-session.target.wants/sm8550-plugin-loader.service
+  if [[ -d "$OVERLAY_ETC" ]]; then
+    mkdir -p "$OVERLAY_ETC/systemd/user/gamescope-session.target.wants"
+    ln -sfn "$PLUGIN_USER_UNIT" \
+      "$OVERLAY_ETC/systemd/user/gamescope-session.target.wants/sm8550-plugin-loader.service"
+  fi
 }
 
 install_bundled_plugins() {
@@ -281,7 +332,7 @@ install_loader() {
   require_emulator
   command -v curl >/dev/null 2>&1 || die "curl is required"
   emu="$(emulator_bin || true)"
-  [[ -n "$emu" ]] || die "box64/FEX binary not found"
+  [[ -n "$emu" ]] || die "Box64 launcher not found"
   log "Emulator: ${emu}"
 
   mapfile -t meta < <(fetch_newest_loader)
@@ -303,23 +354,22 @@ install_loader() {
 
   persist_unit
   enable_cef
-  apply_dropins
   install_bundled_plugins
   chown -R "${REAL_UID}:${REAL_GID}" "$HOMEBREW_ROOT"
   systemctl_root daemon-reload
-  systemctl_root enable plugin_loader.service
-  systemctl_root restart plugin_loader.service || systemctl_root start plugin_loader.service || true
+  user_systemctl daemon-reload 2>/dev/null || true
+  user_systemctl restart sm8550-plugin-loader.service 2>/dev/null || true
 
   if [[ -x "$PLUGIN_LOADER" ]]; then
     log "PluginLoader installed at ${PLUGIN_LOADER}"
   else
     die "PluginLoader missing after install"
   fi
-  if systemctl_root is-active --quiet plugin_loader.service; then
-    log "plugin_loader.service is active"
+  if user_systemctl is-active --quiet sm8550-plugin-loader.service 2>/dev/null; then
+    log "sm8550-plugin-loader.service is active"
   else
-    warn "plugin_loader.service is not active yet — it starts on next boot via systemd"
-    warn "Check: systemctl status plugin_loader.service"
+    warn "Decky user service is not active yet — it starts with the next Game Mode session"
+    warn "Check: systemctl --user status sm8550-plugin-loader.service"
   fi
   log "Fully quit Steam (Game Mode + Desktop) once so CEF remote debugging is picked up."
   log "Then open Game Mode → ⋯ (Decky). Enable SM8550-LED and SM8550-Power."
@@ -327,6 +377,7 @@ install_loader() {
 
 verify_loader() {
   log "User: ${REAL_USER}  home: ${REAL_HOME}"
+  prepare_decky_runtime
   if [[ -x "$PLUGIN_LOADER" ]]; then
     log "PluginLoader: ${PLUGIN_LOADER}"
     command -v file >/dev/null 2>&1 && file "$PLUGIN_LOADER" || true
@@ -335,20 +386,20 @@ verify_loader() {
   fi
   [[ -f "$LOADER_VERSION_FILE" ]] && log "Version: $(tr -d '\n' <"$LOADER_VERSION_FILE")"
   persist_unit
-  apply_dropins
   systemctl_root daemon-reload || true
-  systemctl_root is-active plugin_loader.service || true
+  user_systemctl daemon-reload 2>/dev/null || true
+  user_systemctl restart sm8550-plugin-loader.service 2>/dev/null || true
+  user_systemctl is-active sm8550-plugin-loader.service 2>/dev/null || true
 }
 
 uninstall_loader() {
-  systemctl_root disable --now plugin_loader.service 2>/dev/null || true
-  rm -f "$PLUGIN_UNIT_ETC" "$PLUGIN_UNIT_USR" \
-    /etc/systemd/system/multi-user.target.wants/plugin_loader.service
-  rm -rf /etc/systemd/system/plugin_loader.service.d
+  user_systemctl disable --now sm8550-plugin-loader.service 2>/dev/null || true
+  remove_legacy_system_loader
+  rm -f "$PLUGIN_USER_UNIT" \
+    /etc/systemd/user/gamescope-session.target.wants/sm8550-plugin-loader.service
   if [[ -d "$OVERLAY_ETC" ]]; then
-    rm -f "$OVERLAY_ETC/systemd/system/plugin_loader.service" \
-      "$OVERLAY_ETC/systemd/system/multi-user.target.wants/plugin_loader.service"
-    rm -rf "$OVERLAY_ETC/systemd/system/plugin_loader.service.d"
+    rm -f \
+      "$OVERLAY_ETC/systemd/user/gamescope-session.target.wants/sm8550-plugin-loader.service"
   fi
   systemctl_root daemon-reload || true
   rm -rf "$HOMEBREW_ROOT"

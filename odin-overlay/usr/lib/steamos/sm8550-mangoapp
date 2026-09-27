@@ -1,0 +1,179 @@
+#!/bin/bash
+# Mangoapp sibling — same model as SteamOS-Ubuntu gamescope-session.
+# Do NOT force LIBGL_ALWAYS_SOFTWARE / llvmpipe: Frame gallium has no llvmpipe
+# and drisw always fails with "glx: failed to create drisw screen".
+set +e
+
+HOME_DIR="${HOME:-/home/steamos}"
+USER_MANGO="${HOME_DIR}/.config/MangoHud/steam"
+MANGOAPP_BIN=/usr/bin/mangoapp
+
+# shellcheck disable=SC1091
+source /usr/lib/steamos/sm8550-mango-config
+
+mkdir -p "$USER_MANGO"
+
+sm8550_mango_env() {
+  export MANGOHUD_CONFIG=read_cfg
+  export MANGOHUD_CONFIGFILE="${USER_MANGO}/MangoHud.conf"
+  export MANGOHUD_PRESETSFILE="${USER_MANGO}/presets.conf"
+  export GAMESCOPE_MANGOAPP_SOCKET_DISABLE=0
+  # Inherit Gamescope's WSI/Vulkan environment. Forcing classic GLX makes
+  # mangoapp request DRM dumb buffers on SM8550 and produces a blank window.
+  export DISPLAY="${DISPLAY:-:0}"
+}
+
+sm8550_gamescope_alive() {
+  local socket="${GAMESCOPE_WAYLAND_DISPLAY:-gamescope-0}"
+  [[ -n "${XDG_RUNTIME_DIR:-}" && -S "${XDG_RUNTIME_DIR}/${socket}" ]]
+}
+
+sm8550_xwayland_displays() {
+  local socket display
+  {
+    [[ -n "${DISPLAY:-}" ]] && printf '%s\n' "$DISPLAY"
+    for socket in /tmp/.X11-unix/X*; do
+      [[ -S "$socket" ]] || continue
+      display=":${socket##*/X}"
+      printf '%s\n' "$display"
+    done
+  } | awk '!seen[$0]++'
+}
+
+sm8550_mango_tag_external_overlay() {
+  command -v xprop >/dev/null 2>&1 || return 0
+  command -v xwininfo >/dev/null 2>&1 || return 0
+  local id=""
+  local _try
+  for _try in $(seq 1 40); do
+    id="$(xwininfo -root -tree 2>/dev/null | awk '/[Mm]ango[Hh]ud|[Mm]angoapp/{
+      if (match($0, /0x[0-9a-fA-F]+/)) print substr($0, RSTART, RLENGTH)
+    }' | head -1)"
+    [[ -n "$id" ]] && break
+    sleep 0.15
+  done
+  [[ -n "$id" ]] || return 0
+  # Mangoapp has its own gamescope plane. It must never occupy Steam's single
+  # STEAM_OVERLAY slot or Home/QAM will compete with it and stay below games.
+  xprop -id "$id" -remove STEAM_OVERLAY 2>/dev/null || true
+  xprop -id "$id" -f GAMESCOPE_EXTERNAL_OVERLAY 32c \
+    -set GAMESCOPE_EXTERNAL_OVERLAY 1 2>/dev/null || true
+}
+
+sm8550_mango_game_running() {
+  local id appid cls display apps
+  local -a fallback_displays=()
+
+  command -v xprop >/dev/null 2>&1 || return 1
+
+  # Games and Steam use separate Xwayland servers. qam-diag used to hide this
+  # by reporting Gamescope's selected appid in a log. Use Gamescope's live
+  # focusable-app list instead: unlike FOCUSED_APP, it drops the game as soon
+  # as its last window closes and cannot leave mangoapp visible in Steam UI.
+  while IFS= read -r display; do
+    [[ -n "$display" ]] || continue
+    apps="$(DISPLAY="$display" xprop -root GAMESCOPE_FOCUSABLE_APPS 2>/dev/null || true)"
+    if [[ "$apps" != *"="* ]]; then
+      fallback_displays+=("$display")
+      continue
+    fi
+    apps="${apps#*=}"
+    apps="${apps//,/ }"
+    for appid in $apps; do
+      case "$appid" in
+        ''|0|769|4294967295|*[!0-9]*) ;;
+        *) return 0 ;;
+      esac
+    done
+  done < <(sm8550_xwayland_displays)
+
+  # A present list is authoritative, including an empty/Steam-only list. Only
+  # walk windows on displays where this gamescope version exposes no list.
+  ((${#fallback_displays[@]} > 0)) || return 1
+
+  # Fallback only for gamescope versions without GAMESCOPE_FOCUSABLE_APPS.
+  command -v xwininfo >/dev/null 2>&1 || return 1
+  for display in "${fallback_displays[@]}"; do
+    while read -r id; do
+      [[ -n "$id" ]] || continue
+      cls="$(DISPLAY="$display" xprop -id "$id" WM_CLASS 2>/dev/null)"
+      printf '%s\n' "$cls" | grep -qi 'mangoapp' && continue
+      printf '%s\n' "$cls" | grep -qi 'steam_app_' && return 0
+
+      appid="$(DISPLAY="$display" xprop -id "$id" STEAM_GAME 2>/dev/null \
+        | awk -F'= ' '/STEAM_GAME\\(CARDINAL\\)/ { print $2; exit }')"
+      case "$appid" in
+        ''|0|769|4294967295) ;;
+        *[!0-9]*) ;;
+        *) return 0 ;;
+      esac
+    done < <(DISPLAY="$display" xwininfo -root -tree 2>/dev/null | awk '{
+      if (match($0, /0x[0-9a-fA-F]+/)) print substr($0, RSTART, RLENGTH)
+    }' | sort -u)
+  done
+  return 1
+}
+
+sm8550_mango_apply_visibility() {
+  local selected=0 effective=0 current="" tmp
+  if [[ -f "${USER_MANGO}/selected-preset" ]]; then
+    selected="$(tr -d '[:space:]' <"${USER_MANGO}/selected-preset")"
+  fi
+  [[ "$selected" =~ ^[0-9]+$ ]] || selected=0
+
+  if (( selected > 0 )) && sm8550_mango_game_running; then
+    effective="$selected"
+  fi
+
+  current="$(grep '^preset=' "${USER_MANGO}/MangoHud.conf" 2>/dev/null \
+    | tail -1 | cut -d= -f2 | tr -d '[:space:]')"
+  [[ "$current" == "$effective" ]] && return 0
+
+  tmp="$(mktemp "${USER_MANGO}/MangoHud.conf.tmp.XXXXXX")" || return 1
+  printf 'control=mangoapp\npreset=%s\n' "$effective" >"$tmp"
+  chmod 0644 "$tmp" 2>/dev/null || true
+  mv -f "$tmp" "${USER_MANGO}/MangoHud.conf"
+}
+
+sm8550_mango_run_once() {
+  SM8550_MANGO_DEFER_EFFECTIVE=1 sm8550_mango_ensure_configs
+  sm8550_mango_apply_visibility
+  sm8550_mango_sanitize_config "${USER_MANGO}/MangoHud.conf"
+  sm8550_mango_env
+  exec "$MANGOAPP_BIN"
+}
+
+case "${1:-}" in
+  --supervisor)
+    trap '[[ -n "${mpid:-}" ]] && kill "$mpid" 2>/dev/null; exit 0' TERM INT HUP
+    sleep 3
+    while true; do
+      sm8550_gamescope_alive || exit 0
+      SM8550_MANGO_DEFER_EFFECTIVE=1 sm8550_mango_ensure_configs
+      sm8550_mango_apply_visibility
+      sm8550_mango_sanitize_config "${USER_MANGO}/MangoHud.conf"
+      sm8550_mango_env
+      "$MANGOAPP_BIN" &
+      mpid=$!
+      sm8550_mango_tag_external_overlay &
+      wait "$mpid" 2>/dev/null || true
+      # Do not respawn a Wayland client while Gamescope is shutting down.
+      # That keeps gamescope-session alive until systemd's stop timeout and
+      # loses SteamOSManager's one-shot Plasma selection.
+      sm8550_gamescope_alive || exit 0
+      sleep 1
+    done
+    ;;
+  --watch-config)
+    trap 'exit 0' TERM INT HUP
+    while true; do
+      sm8550_gamescope_alive || exit 0
+      SM8550_MANGO_DEFER_EFFECTIVE=1 sm8550_mango_ensure_configs
+      sm8550_mango_apply_visibility
+      sleep 1
+    done
+    ;;
+  *)
+    sm8550_mango_run_once
+    ;;
+esac

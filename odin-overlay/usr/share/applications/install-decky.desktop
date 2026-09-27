@@ -7,5 +7,5 @@ Exec=konsole -e bash -c '/usr/bin/install-decky; echo; read -r -p "Press Enter t
 Icon=steamdeck-gaming-return
 Terminal=false
 Categories=System;Utility;X-ARM-Manager;
-Keywords=decky;plugin;loader;steam;box64;fex;homebrew;
+Keywords=decky;plugin;loader;steam;fex;homebrew;
 StartupNotify=true

@@ -1,0 +1,46 @@
+#!/bin/bash
+# Live fix: Decky via Box64, FEX not global. Safe to re-run after Steam updates FEX.
+set -euo pipefail
+
+if [[ "${EUID:-0}" -ne 0 ]]; then
+  exec pkexec --disable-internal-agent env bash "$0" "$@"
+fi
+
+log() { printf '==> [decky-box64] %s\n' "$*"; }
+
+log "Disable global FEX binfmt watcher"
+systemctl disable --now sm8550-fex-binfmt.path 2>/dev/null || true
+rm -f /etc/systemd/system/multi-user.target.wants/sm8550-fex-binfmt.path \
+  /var/lib/overlays/etc/upper/systemd/system/multi-user.target.wants/sm8550-fex-binfmt.path \
+  /usr/lib/systemd/system/sm8550-fex-binfmt.path 2>/dev/null || true
+/usr/lib/steamos/sm8550-fex-binfmt 2>/dev/null || true
+
+if ! command -v box64 >/dev/null 2>&1 && [[ ! -x /usr/local/bin/box64 ]]; then
+  if [[ -x /usr/bin/update-box64 ]]; then
+    log "Box64 missing — building (may take several minutes)..."
+    /usr/bin/update-box64 install
+  else
+    echo "ERROR: box64 and update-box64 are missing — run install-decky" >&2
+    exit 1
+  fi
+fi
+
+WRAPPER_SRC="/usr/lib/steamos/sm8550-plugin-loader"
+if [[ -x /usr/bin/install-decky ]]; then
+  log "Re-run install-decky verify (rewrites unit + drop-ins)"
+  /usr/bin/install-decky verify || true
+elif [[ -x "$WRAPPER_SRC" ]]; then
+  log "Decky wrapper present; restart occurs in the Gamescope user session"
+else
+  log "WARN: install-decky and sm8550-plugin-loader missing"
+fi
+
+if [[ -S /run/user/1000/bus ]]; then
+  runuser -u steamos -- env \
+    HOME=/home/steamos USER=steamos XDG_RUNTIME_DIR=/run/user/1000 \
+    DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
+    systemctl --user --no-pager --full status sm8550-plugin-loader.service \
+    2>/dev/null || true
+fi
+log "binfmt: $(ls /proc/sys/fs/binfmt_misc/ 2>/dev/null | grep -E 'box64|FEX' | tr '\n' ' ')"
+log "log: $(tail -3 /home/steamos/homebrew/logs/plugin_loader-box64.log 2>/dev/null || echo n/a)"

@@ -1,0 +1,137 @@
+#!/usr/bin/env bash
+# Repair Discover/Flathub: fusermount setuid + flatpak wrappers + atomupd off.
+set -euo pipefail
+
+if [[ "${EUID:-0}" -ne 0 ]]; then
+  exec pkexec --disable-internal-agent env bash "$0" "$@"
+fi
+
+log() { printf '==> [fix-discover] %s\n' "$*"; }
+
+fix_fusermount_suid() {
+  local p
+  for p in /usr/bin/fusermount /usr/bin/fusermount3; do
+    [[ -e "$p" ]] || continue
+    chown root:root "$p" 2>/dev/null || true
+    chmod 4755 "$p" 2>/dev/null || true
+    log "fusermount: $(ls -la "$p" 2>/dev/null || echo missing)"
+  done
+}
+
+if [[ ! -w /usr/bin/pkexec ]]; then
+  mount -o remount,rw / 2>/dev/null || true
+fi
+
+if [[ -r /usr/lib/steamos/sm8550-restore-privs ]] \
+  && ! grep -q fusermount3 /usr/lib/steamos/sm8550-restore-privs 2>/dev/null; then
+  log "Upgrade sm8550-restore-privs (old copy lacks fusermount setuid)"
+  install -D -m0755 /usr/share/steamos-odin/sm8550-restore-privs \
+    /usr/lib/steamos/sm8550-restore-privs 2>/dev/null || true
+fi
+
+log "Restore setuid (pkexec + fusermount for revokefs unmount)"
+if [[ -x /usr/lib/steamos/sm8550-restore-privs ]]; then
+  /usr/lib/steamos/sm8550-restore-privs
+fi
+# Always fix fusermount — live images often ship an older restore-privs without it.
+fix_fusermount_suid
+
+log "Install flatpak env + wrappers"
+install -D -m0755 /dev/stdin /usr/lib/steamos/sm8550-flatpak-env <<'EOF'
+#!/bin/bash
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+export FUSERMOUNT3="/usr/bin/fusermount3"
+export FUSERMOUNT="/usr/bin/fusermount"
+EOF
+install -D -m0644 /dev/stdin /usr/lib/environment.d/99-sm8550-flatpak.conf <<'EOF'
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+FUSERMOUNT3=/usr/bin/fusermount3
+FUSERMOUNT=/usr/bin/fusermount
+EOF
+
+recover_flatpak_bin() {
+  local dest="$1" backup="$2"
+  [[ -x "$backup" ]] && return 0
+  for cand in /opt/stock-steamos/usr/bin/flatpak \
+    /usr/share/steamos-odin/flatpak.bin; do
+    [[ -x "$cand" ]] || continue
+    cp -a "$cand" "$backup"
+    log "recovered $backup from $cand"
+    return 0
+  done
+  if command -v pacman >/dev/null 2>&1; then
+    log "flatpak.bin missing — reinstalling flatpak package"
+    pacman -S --noconfirm flatpak >/dev/null 2>&1 || true
+    [[ -x "$dest" && ! -f "$backup" ]] && cp -a "$dest" "$backup"
+  fi
+}
+
+backup_real() {
+  local dest="$1" backup="$2"
+  [[ -f "$backup" ]] && return 0
+  [[ -x "$dest" ]] || { recover_flatpak_bin "$dest" "$backup"; return 0; }
+  if head -1 "$dest" 2>/dev/null | grep -q '^#!/bin/bash'; then
+    recover_flatpak_bin "$dest" "$backup"
+    return 0
+  fi
+  cp -a "$dest" "$backup"
+}
+
+backup_real /usr/bin/flatpak /usr/lib/steamos/flatpak.bin
+install -D -m0755 /dev/stdin /usr/bin/flatpak <<'EOF'
+#!/bin/bash
+set -euo pipefail
+REAL="/usr/lib/steamos/flatpak.bin"
+[[ -x "$REAL" ]] || { echo "flatpak: missing $REAL" >&2; exit 127; }
+source /usr/lib/steamos/sm8550-flatpak-env
+exec "$REAL" "$@"
+EOF
+
+for _name in flatpak-system-helper flatpak-session-helper; do
+  backup_real "/usr/lib/${_name}" "/usr/lib/steamos/${_name}.bin"
+  install -D -m0755 /dev/stdin "/usr/lib/${_name}" <<EOF
+#!/bin/bash
+set -euo pipefail
+REAL="/usr/lib/steamos/${_name}.bin"
+[[ -x "\$REAL" ]] || { echo "${_name}: missing \$REAL" >&2; exit 127; }
+source /usr/lib/steamos/sm8550-flatpak-env
+exec "\$REAL" "\$@"
+EOF
+done
+
+install -D -m0755 /dev/stdin /etc/xdg/plasma-workspace/env/sm8550-flatpak-path.sh <<'EOF'
+#!/bin/sh
+if [ -r /usr/lib/steamos/sm8550-flatpak-env ]; then
+  . /usr/lib/steamos/sm8550-flatpak-env
+fi
+EOF
+
+log "Offload + /var/tmp sticky bit"
+if [[ -x /usr/lib/steamos/sm8550-setup-steamos-offload ]]; then
+  /usr/lib/steamos/sm8550-setup-steamos-offload
+else
+  mkdir -p /home/.steamos/offload/var/lib/flatpak /home/.steamos/offload/var/tmp
+  chmod 1777 /home/.steamos/offload/var/tmp /var/tmp 2>/dev/null || true
+fi
+
+log "Disable ghost SteamOS OTA in Discover"
+systemctl disable --now atomupd.service 2>/dev/null || true
+ln -sfn /dev/null /etc/systemd/system/atomupd.service
+rm -f /usr/lib/qt6/plugins/discover/steamos-backend.so
+install -D -m0644 /dev/stdin /etc/xdg/discoverrc <<'EOF'
+[Addons]
+Exclude=org.kde.discover.steamosbackend
+EOF
+
+systemctl daemon-reload
+systemctl restart flatpak-system-helper.service 2>/dev/null || true
+flatpak repair -y 2>/dev/null || flatpak repair 2>/dev/null || true
+rm -rf /var/tmp/flatpak-cache-* 2>/dev/null || true
+
+log "flatpak wrapper: $(head -1 /usr/bin/flatpak 2>/dev/null || echo missing)"
+log "flatpak.bin: $(ls -la /usr/lib/steamos/flatpak.bin 2>/dev/null || echo missing)"
+if ! ls -la /usr/bin/fusermount3 2>/dev/null | grep -q 'rws'; then
+  log "ERROR: fusermount3 still lacks setuid — revokefs will keep failing"
+  exit 1
+fi
+log "Done. Cierra sesión en Plasma (no solo Discover) y prueba Firefox otra vez."

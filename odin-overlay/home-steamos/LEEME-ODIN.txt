@@ -2,6 +2,14 @@ SteamOS ARM adaptado para AYN Odin 2 / SM8550
 =============================================
 English: README-ODIN.txt
 
+⛔⛔⛔ AVISO CRÍTICO ⛔⛔⛔
+NO ejecutes en la SD Frame:
+  sync-frame-from-working-ubuntu-system.sh
+→ pantalla negra + cursor arriba-izquierda (no arranca).
+Lee: AVISO-CRITICO-NO-UBUNTU-SESSION.txt
+Recuperación: sudo ./scripts/restore-frame-hybrid-session-to-root.sh
+⛔⛔⛔
+
 
 Usuario preconfigurado:  steamos  (uid 1000, sin contraseña)
 Sesión por defecto:      gamescope (modo juego)
@@ -15,7 +23,7 @@ Qué se cambió
 - libvulkan_freedreno.so Mesa 26.2.3 parcheada
 - Box64 (SD8G2) instalado de forma silenciosa para Decky/x86_64
 - Steam ROM Manager, instalador UFS, instalador Decky
-- Mando: rsinput ±740 + InputPlumber deck-uhid + teclado (háptico OSK)
+- Mando: rsinput ±740 + InputPlumber deck-uhid (mando Steam Deck)
 
 Mando
 -----
@@ -23,9 +31,11 @@ El kernel expone "AYN Odin2 Gamepad" (phys rsinput-gamepad/input0).
 InputPlumber lo convierte en "Valve Steam Deck Controller" (deck-uhid).
 Steam usa el stack oficial (QAM, Steam Input). No es un Xbox 360.
 
-Targets: deck-uhid + keyboard (háptico del teclado en pantalla).
-Si se conecta teclado o ratón USB/Bluetooth, el teclado virtual
-se apaga; al desconectar vuelve. El mando Valve (uhid) no cuenta.
+Target: deck-uhid + keyboard (vibración OSK). Táctil: panel I2C (FT5426);
+rsinput "Gamepad Touchpad" se ignora en la imagen vía udev
+(72-sm8550-touch-dedupe.rules) para que el OSK no duplique teclas (a → aa).
+gamescope --default-touch-mode 4 (Holo).
+El mando Valve (uhid) nunca se trata como HID externo.
 
 sm8550-fixpad aplica EVIOCSABS ±740 antes de arrancar InputPlumber.
 

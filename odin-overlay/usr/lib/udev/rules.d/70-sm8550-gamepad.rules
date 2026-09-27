@@ -1,5 +1,5 @@
 # Native AYN / rsinput pad (kernel joystick) + Valve hidraw from deck-uhid.
-# InputPlumber: deck-uhid + keyboard (OSK haptic). USB/BT HID is ignored.
+# InputPlumber: deck-uhid + keyboard (OSK haptics). USB/BT ignored in composite.
 
 KERNEL=="uhid", MODE="0660", GROUP="input", TAG+="uaccess"
 SUBSYSTEM=="hidraw", KERNELS=="000[356]:28DE:*", MODE="0660", GROUP="input", TAG+="uaccess"
@@ -30,7 +30,6 @@ SUBSYSTEM=="input", ATTRS{name}=="AYN Odin2 Motion", \
   ENV{ID_INPUT_ACCELEROMETER}="1", ENV{ID_INPUT_JOYSTICK}="", MODE="0660", GROUP="input"
 SUBSYSTEM=="input", ATTRS{name}=="AYN Thor Motion", \
   ENV{ID_INPUT_ACCELEROMETER}="1", ENV{ID_INPUT_JOYSTICK}="", MODE="0660", GROUP="input"
-SUBSYSTEM=="input", ATTRS{name}=="AYN Odin2 Gamepad Touchpad", \
-  ENV{ID_INPUT_JOYSTICK}="", ENV{ID_INPUT_MOUSE}="", MODE="0660", GROUP="input"
+# Touchpad node ignored in 72-sm8550-touch-dedupe.rules (dupes panel OSK).
 
 KERNEL=="js[0-9]*", SUBSYSTEM=="input", MODE="0660", GROUP="input", TAG+="uaccess"

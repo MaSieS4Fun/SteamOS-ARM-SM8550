@@ -1,9 +1,11 @@
 # yaml-language-server: $schema=https://raw.githubusercontent.com/ShadowBlip/InputPlumber/main/rootfs/usr/share/inputplumber/schema/composite_device_v1.json
-# SM8550 rsinput → virtual Steam Deck (deck-uhid) + keyboard (OSK haptic).
+# SM8550 rsinput → virtual Steam Deck (deck-uhid + keyboard for OSK haptics).
+#
+# Duplicate keys ("a" → "aa") come from rsinput "Gamepad Touchpad" echoing the
+# I2C panel — ignore it via 72-sm8550-touch-dedupe.rules (not by dropping keyboard).
 #
 # Do not list USB/BT as ignore sources: deck-uhid is USB (VID 28de) and
 # matching it as a source restarts the composite in a loop (cursor, no Steam).
-# External HID is handled by sm8550-inputplumber-ext-hid (drop keyboard target).
 version: 1
 kind: CompositeDevice
 name: AYN Odin 2

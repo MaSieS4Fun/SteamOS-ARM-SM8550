@@ -34,6 +34,9 @@ fix_suid /usr/bin/gpasswd 4755 root:root
 fix_suid /usr/bin/unix_chkpwd 4755 root:root
 fix_suid /usr/bin/mount 4755 root:root
 fix_suid /usr/bin/umount 4755 root:root
+# Flatpak revokefs unmount fails (exit 1) if these lose setuid after image copy.
+fix_suid /usr/bin/fusermount 4755 root:root
+fix_suid /usr/bin/fusermount3 4755 root:root
 
 # D-Bus system helper (group dbus if present)
 if getent group dbus >/dev/null 2>&1; then

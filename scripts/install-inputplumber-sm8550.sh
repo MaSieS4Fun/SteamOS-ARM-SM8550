@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Install ShadowBlip InputPlumber + SM8550 deck-uhid composite into a SteamOS rootfs.
-# deck-uhid (Steam Deck controller) + keyboard target (touch OSK haptic).
+# deck-uhid + keyboard (OSK haptics). Dupes fixed by 72-sm8550-touch-dedupe udev.
 # USB/Bluetooth HID is ignored in the composite so it is not grabbed.
 set -euo pipefail
 
@@ -105,36 +105,8 @@ install_libiio() {
 }
 
 install_odin_composite() {
-  install -d "${R}/etc/inputplumber/devices.d" \
-    "${R}/etc/inputplumber/capability_maps.d" \
-    "${R}/usr/share/inputplumber/capability_maps" \
-    "${R}/usr/lib/systemd/system/inputplumber.service.d" \
-    "${R}/etc/systemd/system/multi-user.target.wants"
-  install -m0644 "${OVL}/etc/inputplumber/devices.d/02-ayn-odin.yaml" \
-    "${R}/etc/inputplumber/devices.d/02-ayn-odin.yaml"
-  install -m0644 "${OVL}/etc/inputplumber/capability_maps.d/ayn_mcu.yaml" \
-    "${R}/etc/inputplumber/capability_maps.d/ayn_mcu.yaml"
-  install -m0644 "${OVL}/etc/inputplumber/capability_maps.d/ayn_mcu.yaml" \
-    "${R}/usr/share/inputplumber/capability_maps/ayn_mcu.yaml"
-  install -m0644 "${OVL}/usr/lib/systemd/system/inputplumber.service.d/99-sm8550.conf" \
-    "${R}/usr/lib/systemd/system/inputplumber.service.d/99-sm8550.conf"
-  install -m0755 "${OVL}/usr/lib/steamos/sm8550-inputplumber-ext-hid" \
-    "${R}/usr/lib/steamos/sm8550-inputplumber-ext-hid"
-  install -m0644 "${OVL}/usr/lib/systemd/system/sm8550-inputplumber-ext-hid.service" \
-    "${R}/usr/lib/systemd/system/sm8550-inputplumber-ext-hid.service"
-  install -m0644 "${OVL}/usr/lib/udev/rules.d/71-sm8550-ext-hid.rules" \
-    "${R}/usr/lib/udev/rules.d/71-sm8550-ext-hid.rules"
-  mkdir -p "${R}/lib/udev/rules.d" \
-    "${R}/usr/lib/systemd/system/multi-user.target.wants"
-  install -m0644 "${OVL}/usr/lib/udev/rules.d/71-sm8550-ext-hid.rules" \
-    "${R}/lib/udev/rules.d/71-sm8550-ext-hid.rules"
-  ln -sfn /usr/lib/systemd/system/sm8550-inputplumber-ext-hid.service \
-    "${R}/usr/lib/systemd/system/multi-user.target.wants/sm8550-inputplumber-ext-hid.service"
-  # Keep 02-ayn-odin.yaml (deck-uhid + keyboard). Drop Ubuntu-named
-  # composites and any leftover mouse composite from the tarball.
-  rm -f "${R}/etc/inputplumber/devices.d/"*mouse* \
-    "${R}/etc/inputplumber/devices.d/02-ayn-controller.yaml" \
-    "${R}/etc/inputplumber/devices.d/01-ayn-controller.yaml"
+  "${SCRIPT_DIR}/install-sm8550-input-overlay.sh" "${R}"
+  mkdir -p "${R}/etc/systemd/system/multi-user.target.wants"
   ln -sfn /usr/lib/systemd/system/inputplumber.service \
     "${R}/etc/systemd/system/multi-user.target.wants/inputplumber.service"
 }
@@ -175,5 +147,5 @@ install_tarball
 install_libiio
 install_odin_composite
 verify_needed
-log "Steam will see Valve Steam Deck Controller (deck-uhid)"
-log "Keyboard target for OSK haptic; USB/BT HID disables that target"
+log "Steam will see Valve Steam Deck Controller (deck-uhid + keyboard haptics)"
+log "Touch dedupe baked in udev: 72-sm8550-touch-dedupe.rules"

@@ -1,0 +1,8 @@
+#!/bin/bash
+# SM8550 wrapper around flatpak-session-helper (user session / Discover).
+set -euo pipefail
+REAL="/usr/lib/steamos/flatpak-session-helper.bin"
+[[ -x "$REAL" ]] || REAL="/usr/lib/flatpak-session-helper.real"
+# shellcheck source=/dev/null
+source /usr/lib/steamos/sm8550-flatpak-env
+exec "$REAL" "$@"

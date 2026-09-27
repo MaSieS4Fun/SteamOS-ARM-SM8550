@@ -1,0 +1,15 @@
+#!/bin/bash
+# Remove legacy global FEX binfmt handlers. FEX must stay Steam/Proton-only;
+# Box64 owns system-wide x86_64 (Decky PluginLoader).
+set -euo pipefail
+
+RUN_DIR=/run/binfmt.d
+
+rm -f "${RUN_DIR}/FEX-x86_64.conf" "${RUN_DIR}/FEX-x86.conf" \
+  "${RUN_DIR}/FEX-x86_64-dyn.conf" "${RUN_DIR}/FEX-x86-dyn.conf" || true
+
+if [[ -x /usr/lib/systemd/systemd-binfmt ]]; then
+  /usr/lib/systemd/systemd-binfmt || true
+fi
+
+exit 0

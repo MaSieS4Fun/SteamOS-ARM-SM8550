@@ -1,6 +1,7 @@
 #!/bin/bash
 # Handheld SM8550 session (Odin 2 / Thor / Mini / Portal).
-# Replaces the Steam Frame OpenVR gamescope command line.
+# Hybrid: exec gamescope as systemd main process (Frame seat/logind path),
+# then gamescope-onready launches sm8550-launch-steam sibling (Ubuntu model).
 
 # Create run directory file for startup and stats sockets
 #   shellcheck disable=SC2030
@@ -34,11 +35,12 @@ if [[ -f /usr/lib/steamos/gamescope-cleanup ]]; then
   source /usr/lib/steamos/gamescope-cleanup
 fi
 
+export PATH="/usr/local/bin:/usr/bin:/bin:${PATH}"
+export LD_LIBRARY_PATH="/usr/local/lib:/usr/local/lib/aarch64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+
 export XCURSOR_THEME="${XCURSOR_THEME:-steam}"
-# Stock Frame mangoapp (zink) coredumps on Turnip; do not spawn it.
-export GAMESCOPE_MANGOAPP_SOCKET_DISABLE=1
-export QT_IM_MODULE="${QT_IM_MODULE:-xim}"
-export GTK_IM_MODULE="${GTK_IM_MODULE:-xim}"
+export QT_IM_MODULE="${QT_IM_MODULE:-steam}"
+export GTK_IM_MODULE="${GTK_IM_MODULE:-ibus}"
 export QT_QPA_PLATFORMTHEME="${QT_QPA_PLATFORMTHEME:-kde}"
 # Compositor is Wayland (GAMESCOPE_WAYLAND_DISPLAY). Do not stamp
 # XDG_SESSION_TYPE=wayland/x11 — Steam DisplayManager then leaves wayland: modeset.
@@ -53,20 +55,25 @@ export SteamDeck=1
 export STEAM_MULTIPLE_XWAYLANDS=1
 export STEAM_GAMESCOPE_HDR_SUPPORTED=0
 export STEAM_ENABLE_VOLUME_HANDLER="${STEAM_ENABLE_VOLUME_HANDLER:-0}"
+export STEAM_DISABLE_AUDIO_DEVICE_SWITCHING=1
 export SRT_URLOPEN_PREFER_STEAM=1
 export ENABLE_GAMESCOPE_WSI=1
+# Proven QAM contract: expose the nested X11 output as Valve/DSI-1 and let
+# gamescope paint Steam UI above the running game.
+export GAMESCOPE_SM8550_STEAM_INTERNAL_X11=1
 export SDL_VIDEO_MINIMIZE_ON_FOCUS_LOSS=0
 export vk_xwayland_wait_ready=false
 export GAMESCOPE_DISABLE_ASYNC_FLIPS=1
+export GAMESCOPE_NV12_COLORSPACE=k_EStreamColorspace_BT601
 # MSM: KMS plane rotation is EINVAL on Adreno. Shader path is already in
 # DRMBackend.cpp; keep it forced so a 0° probe cannot skip it.
 export GAMESCOPE_USE_ROTATION_SHADER=1
 export GAMESCOPE_FORCE_INTERNAL="${GAMESCOPE_FORCE_INTERNAL:-1}"
 # Same physical size the working SM8550 session advertises (not connector mm).
 export GAMESCOPE_FAKE_OUTPUT_MM="${GAMESCOPE_FAKE_OUTPUT_MM:-177x100}"
-export STEAM_USE_MANGOAPP=0
-export STEAM_MANGOAPP_PRESETS_SUPPORTED=0
-export STEAM_MANGOAPP_HORIZONTAL_SUPPORTED=0
+export STEAM_USE_MANGOAPP=1
+export STEAM_MANGOAPP_PRESETS_SUPPORTED=1
+export STEAM_MANGOAPP_HORIZONTAL_SUPPORTED=1
 export STEAM_DISABLE_MANGOAPP_ATOM_WORKAROUND=1
 export STEAM_GAMESCOPE_VRR_SUPPORTED=1
 export STEAM_GAMESCOPE_HAS_TEARING_SUPPORT=1
@@ -76,12 +83,14 @@ export STEAM_GAMESCOPE_NIS_SUPPORTED=1
 export STEAM_GAMESCOPE_FANCY_SCALING_SUPPORT=1
 export STEAM_USE_DYNAMIC_VRS=1
 export STEAM_GAMESCOPE_COLOR_MANAGED=1
+export STEAM_GAMESCOPE_VIRTUAL_WHITE=1
 export STEAM_ALLOW_DRIVE_UNMOUNT=1
 export STEAM_ALLOW_DRIVE_ADOPT=1
 
 export VK_ICD_FILENAMES="${VK_ICD_FILENAMES:-/usr/share/vulkan/icd.d/freedreno_icd.aarch64.json}"
 export VK_DRIVER_FILES="${VK_DRIVER_FILES:-$VK_ICD_FILENAMES}"
 export SDL_GAMECONTROLLERCONFIG_FILE="${SDL_GAMECONTROLLERCONFIG_FILE:-/etc/sdl2/qcom-gamecontrollerdb.txt}"
+export SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD="${SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD:-0}"
 export SDL_VIDEO_X11_DGAMOUSE=0
 
 # Native rsinput sticks: kernel reports ~±1408; emulators need ±740.
@@ -124,8 +133,30 @@ else
 fi
 REFRESH_HZ="${GAMESCOPE_REFRESH:-60}"
 
+GAMESCOPE_BIN=/usr/local/bin/gamescope
+[[ -x "$GAMESCOPE_BIN" ]] || GAMESCOPE_BIN="$(command -v gamescope || true)"
+if [[ -z "$GAMESCOPE_BIN" || ! -x "$GAMESCOPE_BIN" ]]; then
+  echo >&2 "ERROR: gamescope missing"
+  exit 1
+fi
+
 GAMESCOPE_SESSION_TARGET="${GAMESCOPE_SESSION_TARGET:-gamescope-session.target}"
 WATCH_SERVICE=""
+
+# QAM debug: /etc/sm8550-qam-debug (rootfs) and/or ~/.config/sm8550-qam-debug (uid 1000).
+QAM_LOG_DIR="/home/steamos/.local/share/qam-debug"
+QAM_LOG="${QAM_LOG_DIR}/gamescope-qam.log"
+QAM_DEBUG=0
+if [[ -f /etc/sm8550-qam-debug || -f /home/steamos/.config/sm8550-qam-debug || "${GAMESCOPE_SM8550_QAM_DEBUG:-0}" == "1" ]]; then
+  QAM_DEBUG=1
+  export GAMESCOPE_SM8550_QAM_DEBUG=1
+  mkdir -p "$QAM_LOG_DIR"
+  {
+    echo ""
+    echo "===== gamescope-session $(date -Iseconds 2>/dev/null || date) pid=$$ ====="
+  } >>"$QAM_LOG"
+  echo >&2 "gamescope-session: QAM debug → ${QAM_LOG}"
+fi
 
 # DRM backend = Wayland compositor + Xwayland. Steam paints on X11 (:0 / xcb).
 # --backend wayland/sdl would nest inside another compositor and drop the panel.
@@ -143,6 +174,9 @@ GAMESCOPE_ARGS=(
   --adaptive-sync
   --default-touch-mode 4
   --hide-cursor-delay 3000
+  --cursor-hotspot 5,3
+  --cursor /usr/share/holo/holo-cursor.png
+  --cursor-scale-height 720
   --framerate-limit 0
   --max-scale 2
   --output-width "$W"
@@ -153,8 +187,8 @@ GAMESCOPE_ARGS=(
   -T "$stats"
 )
 
-  if [[ -f /usr/share/holo/holo-cursor.png ]]; then
-  GAMESCOPE_ARGS+=(--cursor /usr/share/holo/holo-cursor.png --cursor-scale-height 720)
+if [[ "${GAMESCOPE_SM8550_QAM_DEBUG:-0}" == "1" ]]; then
+  GAMESCOPE_ARGS+=(--debug-focus --debug-events)
 fi
 
 if [[ "${GAMESCOPE_SESSION_TARGET}" != "gamescope-session.target" ]]; then
@@ -163,4 +197,10 @@ fi
 
 echo >&2 "gamescope-session: output=$OUTPUT panel=${PANEL_W}x${PANEL_H} nested=${W}x${H}@${REFRESH_HZ}"
 
-exec gamescope "${GAMESCOPE_ARGS[@]}" -- /usr/lib/steamos/gamescope-onready ${WATCH_SERVICE:-}
+if [[ "$QAM_DEBUG" == 1 ]]; then
+  # stderr = xwm Viewport Layer / qam-diag / debug-focus (no Desktop ni journal)
+  exec "$GAMESCOPE_BIN" "${GAMESCOPE_ARGS[@]}" -- /usr/lib/steamos/gamescope-onready ${WATCH_SERVICE:-} \
+    2>>"$QAM_LOG"
+fi
+
+exec "$GAMESCOPE_BIN" "${GAMESCOPE_ARGS[@]}" -- /usr/lib/steamos/gamescope-onready ${WATCH_SERVICE:-}

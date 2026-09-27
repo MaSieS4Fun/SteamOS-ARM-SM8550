@@ -1,0 +1,8 @@
+#!/bin/bash
+# SM8550 wrapper around the real flatpak-system-helper D-Bus service.
+set -euo pipefail
+REAL="/usr/lib/steamos/flatpak-system-helper.bin"
+[[ -x "$REAL" ]] || REAL="/usr/lib/flatpak-system-helper.real"
+# shellcheck source=/dev/null
+source /usr/lib/steamos/sm8550-flatpak-env
+exec "$REAL" "$@"

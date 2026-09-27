@@ -1,0 +1,25 @@
+Subject: [PATCH 0010] sm8550: fullscreen game under QAM + visible Steam menus
+
+Implemented in-tree (external-and-mods/gamescope/src/), not a standalone diff.
+
+steamcompmgr.cpp (0010 core):
+- window_is_running_game() — real game windows vs Steam/overlay.
+- window_last_done_commit_index() — prefer WSI swapchain for games.
+- paint_window_commit / paint_window viewport — game uses pLayer as scaleW.
+- configure_request / configure_win / unmap_win — ignore shrink/hide on games.
+- GAMESCOPE_FOCUSED_APP_GFX — keep game appid while Steam UI has focus.
+
+0010 QAM visibility (same binary, 838faa77 rebuild required):
+- Viewport layers: non-game children get PaintWindowFlag::ViewportOverlayZ (zpos overlay).
+- update_viewport_stacking — paint game layers before Steam UI layers.
+- overlayMinWidth 0 while a game is focused (detect narrow QAM overlay).
+
+wlserver.cpp:
+- GAMESCOPE_SM8550_STEAM_INTERNAL_X11 — nested X output named DSI-1 / Valve Deck
+  so Steam DisplayManager does not leave QAM behind the game when config.vdf
+  says External+Windowed. Session must export this env (gamescope-session).
+
+Deploy:
+  ./scripts/build-gamescope-sm8550.sh
+  sudo ./scripts/install-sm8550-qam-gamescope-mounted.sh /run/media/masies/root
+  sudo cp odin-overlay/usr/lib/steamos/gamescope-session /run/media/masies/root/usr/lib/steamos/
