@@ -1,0 +1,7 @@
+[Unit]
+Description=Enable DRM connector poll for Plasma
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/steamos/sm8550-drm-poll on
+TimeoutStartSec=5

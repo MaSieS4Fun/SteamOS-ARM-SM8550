@@ -69,6 +69,7 @@ prepare_firmware_masi() {
 
     # Overlay Rocknix/linux-firmware a740_sqe.fw (Armbian SQE causes RPCS3 glitches)
     firmware_overlay_rocknix_sqe "${fw_out}" || return 1
+    firmware_overlay_wcn7850_7014 "${fw_out}" || return 1
 
     [[ "${n}" -gt 0 ]] || {
         echo "ERROR: empty firmware output" >&2
@@ -95,4 +96,29 @@ firmware_overlay_rocknix_sqe() {
     mkdir -p "${fw_out}/qcom"
     cp -a "${ov_sqe}" "${fw_out}/qcom/a740_sqe.fw"
     echo "  + qcom/a740_sqe.fw ← Rocknix/linux-firmware (RPCS3 fix)" >&2
+}
+
+# Pin WCN7850 to the board-2/amss that scans 5 GHz stably on 7.2.8
+# (WLAN.HMT.1.0.c5-00481 from the 7.0.14-era tree). The 2.2M linux-firmware
+# board-2 lists 5 GHz but association/scan flaps on this image.
+firmware_overlay_wcn7850_7014() {
+    local fw_out="$1"
+    local src="${ROOT}/firmware-overrides/ath12k/WCN7850/hw2.0"
+    local dest="${fw_out}/ath12k/WCN7850/hw2.0"
+    local want="d3750b67b1013fe82358d0538fb131b0"
+    local have=""
+
+    [[ -f "${src}/amss.bin" ]] || {
+        echo "ERROR: missing ${src}/amss.bin (WCN7850 pin)" >&2
+        return 1
+    }
+    have="$(md5sum "${src}/amss.bin" | awk '{print $1}')"
+    [[ "${have}" == "${want}" ]] || {
+        echo "ERROR: WCN7850 amss.bin md5 ${have} != ${want}" >&2
+        return 1
+    }
+    rm -rf "${dest}"
+    mkdir -p "$(dirname "${dest}")"
+    cp -a "${ROOT}/firmware-overrides/ath12k/WCN7850/." "${fw_out}/ath12k/WCN7850/"
+    echo "  + ath12k/WCN7850 ← HMT.1.0.c5-00481 (stable 5 GHz board-2)" >&2
 }

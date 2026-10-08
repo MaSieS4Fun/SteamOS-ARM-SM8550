@@ -1,0 +1,4 @@
+#!/bin/bash
+# Last chance before the kernel tears DRM down. A poll detect() still running
+# keeps the panel lit and never reaches reboot.
+timeout 1 sh -c 'printf "0\n" > /sys/module/drm_kms_helper/parameters/poll' || true

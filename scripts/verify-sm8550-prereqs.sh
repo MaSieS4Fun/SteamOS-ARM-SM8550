@@ -7,7 +7,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 MOD="${ROOT}/external-and-mods"
 GS="${MOD}/gamescope/build/src/gamescope"
-KOUT="${MOD}/kernel/output/7.0.14-edge-sm8550"
+# shellcheck source=lib/sm8550-kernel-out.sh
+source "${SCRIPT_DIR}/lib/sm8550-kernel-out.sh"
+KOUT="$(sm8550_resolve_kout "${MOD}" || true)"
+KREL="$(sm8550_kernel_release "${KOUT}" 2>/dev/null || true)"
 MESA="${MOD}/mesa-sm8550"
 MANGOHUD="${MOD}/MangoHud"
 
@@ -37,7 +40,7 @@ die() { printf 'ERROR: [verify-sm8550] %s\n' "$*" >&2; exit 1; }
 log "Checking SM8550 build inputs in ${ROOT}"
 
 check "kernel KERNEL" test -f "${KOUT}/boot/KERNEL"
-check "kernel modules" test -d "${KOUT}/modules/7.0.14-edge-sm8550"
+check "kernel modules" test -n "${KREL}" -a -d "${KOUT}/modules/${KREL}"
 check "gamescope (project build)" test -x "${GS}"
 check "MangoHud source" test -f "${MANGOHUD}/meson.build"
 check "Mesa turnip-working" test -f "${MESA}/turnip-working/libvulkan_freedreno.so"

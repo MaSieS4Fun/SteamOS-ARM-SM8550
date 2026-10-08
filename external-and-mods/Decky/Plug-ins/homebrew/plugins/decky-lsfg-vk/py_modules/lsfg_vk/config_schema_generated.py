@@ -111,7 +111,9 @@ def get_script_generation_logic():
             lines.append("export DISABLE_VKBASALT=1")
         if config.get("force_enable_vkbasalt", False):
             lines.append("export ENABLE_VKBASALT=1")
-        if not config.get("enable_wsi", False):
+        # Default is on. Only an explicit false opts out, and Game Mode's
+        # session script puts it back: without WSI the game never takes focus.
+        if config.get("enable_wsi", True) is False:
             lines.append("export ENABLE_GAMESCOPE_WSI=0")
             lines.append("export DXVK_HDR=0")
         if config.get("enable_zink", False):
@@ -137,7 +139,7 @@ def get_function_parameters() -> str:
                      mangohud_workaround: bool = False,
                      disable_vkbasalt: bool = False,
                      force_enable_vkbasalt: bool = False,
-                     enable_wsi: bool = False,
+                     enable_wsi: bool = True,
                      enable_zink: bool = False"""
 
 

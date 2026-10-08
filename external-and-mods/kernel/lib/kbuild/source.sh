@@ -65,22 +65,53 @@ fetch_armbian_defconfig() {
     echo "${dest}"
 }
 
+_armbian_copy_missing_patches() {
+    local dest="$1" src="$2"
+    shift 2
+    local name copied=0
+    [[ -d "${src}" ]] || return 1
+    for name in "$@"; do
+        [[ -f "${dest}/${name}" ]] && continue
+        [[ -f "${src}/${name}" ]] || continue
+        cp -f "${src}/${name}" "${dest}/${name}"
+        copied=$((copied + 1))
+    done
+    [[ "${copied}" -gt 0 ]]
+}
+
 fetch_armbian_patches() {
-    local patch_set="$1" dest="${PATCH_CACHE}/${patch_set}"
-    local upstream names name raw_url
+    local patch_set="$1"
+    local dest="${PATCH_CACHE}/${patch_set}"
+    local names name raw_url ref index sha
 
-    upstream="$(_armbian_patch_set_upstream "${patch_set}")"
-    if [[ "${upstream}" != "${patch_set}" ]]; then
-        echo "  ${patch_set}: not on Armbian yet — download source ${upstream}" >&2
+    if ! mkdir -p "${dest}" 2>/dev/null || ! touch "${dest}/.writable" 2>/dev/null; then
+        echo "ERROR: cannot write ${dest} (directory not writable — often left as root from a sudo build)" >&2
+        echo "  Fix: sudo chown -R \"\$USER:\$USER\" \"${PATCH_CACHE}\"" >&2
+        return 1
     fi
+    rm -f "${dest}/.writable"
 
-    mkdir -p "${dest}"
-
-    names="$(_armbian_resolve_patch_names "${patch_set}" "${dest}")" || {
-        echo "ERROR: could not resolve patch list for ${patch_set}" >&2
-        echo "  Tip: rm -rf ${dest} .cache/armbian-build-ref and re-run ./make.sh" >&2
+    ref="$(_armbian_resolve_archive_ref "${patch_set}")" || {
+        echo "ERROR: Armbian archive ${patch_set} is not on ${ARMBIAN_BUILD_GIT_REF} and has no fallback git ref" >&2
+        echo "  Tip: keep ${dest} if you still have a working cache" >&2
         return 1
     }
+
+    declare -A blobs=()
+    index="$(_armbian_patch_index_from_api "${patch_set}" "${ref}" 2>/dev/null)" || index=""
+    if [[ -n "${index}" ]]; then
+        names="$(printf '%s\n' "${index}" | _armbian_index_names)"
+        while IFS=$'\t' read -r name sha; do
+            [[ -n "${name}" ]] || continue
+            blobs["${name}"]="${sha}"
+        done <<< "${index}"
+    else
+        names="$(_armbian_resolve_patch_names "${patch_set}" "${dest}")" || {
+            echo "ERROR: could not resolve patch list for ${patch_set}" >&2
+            echo "  Tip: keep ${dest} (do not delete a working cache)" >&2
+            return 1
+        }
+    fi
 
     [[ -n "${names}" ]] || {
         echo "ERROR: patch set ${patch_set} is empty" >&2
@@ -91,55 +122,69 @@ fetch_armbian_patches() {
     while IFS= read -r name; do
         [[ -n "${name}" ]] || continue
         expected+=("${name}")
-        [[ -f "${dest}/${name}" ]] || missing+=("${name}")
+        if _armbian_blob_outdated "${dest}" "${name}" "${blobs[${name}]:-}"; then
+            missing+=("${name}")
+        fi
     done <<< "${names}"
 
-    if [[ ${#missing[@]} -gt 0 ]]; then
-        if [[ ${#missing[@]} -eq ${#expected[@]} ]] \
-            && _armbian_seed_patch_cache_from_upstream "${patch_set}" "${dest}" "${upstream}"; then
-            missing=()
-            for name in "${expected[@]}"; do
-                [[ -f "${dest}/${name}" ]] || missing+=("${name}")
-            done
-        fi
+    if [[ ${#missing[@]} -eq 0 ]]; then
+        echo "  ${patch_set}: ${#expected[@]} patches from local cache (${ref})" >&2
+        printf '%s\n' "${expected[@]}" > "${dest}/.patch-list"
+        printf '%s\n' "${ref}" > "${dest}/.armbian-ref"
+        _armbian_sync_dt_bundle "${patch_set}" "${dest}" "${ref}" || return 1
+        echo "${dest}"
+        return 0
     fi
 
+    local -a seed_dirs=(
+        "${CACHE_DIR}/armbian-build-ref/patch/kernel/archive/${patch_set}"
+        "${ROOT}/patches/armbian/${patch_set}"
+    )
+    local seed
+    for seed in "${seed_dirs[@]}"; do
+        [[ ${#missing[@]} -gt 0 ]] || break
+        _armbian_copy_missing_patches "${dest}" "${seed}" "${missing[@]}" || true
+        missing=()
+        for name in "${expected[@]}"; do
+            if _armbian_blob_outdated "${dest}" "${name}" "${blobs[${name}]:-}"; then
+                missing+=("${name}")
+            fi
+        done
+    done
+
     if [[ ${#missing[@]} -gt 0 ]]; then
-        if [[ ${#missing[@]} -eq ${#expected[@]} ]]; then
-            echo "==> Downloading patches ${patch_set} (${#expected[@]} files from ${upstream} via raw.githubusercontent.com)" >&2
-        else
-            echo "==> Syncing ${#missing[@]} missing patch(es) for ${patch_set} (from ${upstream})" >&2
-        fi
-        local dl_fail=0 name
+        echo "==> Syncing ${#missing[@]} patch(es) for ${patch_set} (Armbian ${ref})" >&2
+        local dl_fail=0
         for name in "${missing[@]}"; do
-            raw_url="${ARMBIAN_PATCH_RAW}/patch/kernel/archive/${upstream}/${name}"
-            if curl -fsSL --connect-timeout 15 --max-time 180 \
-                -A "MaSi-OS-Kernel-Updater" \
-                -o "${dest}/${name}.partial" "${raw_url}" \
-                && [[ -s "${dest}/${name}.partial" ]]; then
-                mv "${dest}/${name}.partial" "${dest}/${name}"
+            raw_url="$(_armbian_raw_url "${ref}" "${patch_set}" "${name}")"
+            if _armbian_download_file "${raw_url}" "${dest}/${name}"; then
+                :
             else
-                rm -f "${dest}/${name}.partial"
                 dl_fail=1
             fi
         done
         if [[ "${dl_fail}" -eq 1 ]]; then
-            echo "  raw download failed; trying git sparse checkout (${upstream})..." >&2
-            _armbian_patch_names_from_git_sparse "${upstream}" "${dest}" >/dev/null || {
-                echo "ERROR: could not download ${patch_set} patches (source ${upstream}; API/raw/git)" >&2
-                return 1
-            }
+            echo "  raw download failed; trying git sparse checkout (${patch_set} @ ${ref})..." >&2
+            _armbian_patch_names_from_git_sparse "${patch_set}" "${dest}" "${ref}" >/dev/null || true
         fi
+        missing=()
+        for name in "${expected[@]}"; do
+            if _armbian_blob_outdated "${dest}" "${name}" "${blobs[${name}]:-}"; then
+                missing+=("${name}")
+            fi
+        done
     fi
 
-    shopt -s nullglob
-    local -a patches=("${dest}"/*.patch)
-    shopt -u nullglob
-    [[ ${#patches[@]} -ge ${#expected[@]} ]] || {
-        echo "ERROR: patch cache incomplete for ${patch_set} (${#patches[@]}/${#expected[@]} in ${dest})" >&2
-        echo "  Tip: rm -rf ${dest} and re-run ./make.sh" >&2
+    if [[ ${#missing[@]} -gt 0 ]]; then
+        echo "ERROR: patch cache incomplete for ${patch_set} (missing ${#missing[@]}/${#expected[@]} in ${dest})" >&2
+        echo "  ref=${ref}  url=$(_armbian_raw_url "${ref}" "${patch_set}" "<name>.patch")" >&2
         return 1
-    }
+    fi
 
+    printf '%s\n' "${expected[@]}" > "${dest}/.patch-list"
+    printf '%s\n' "${ref}" > "${dest}/.armbian-ref"
+    _armbian_sync_dt_bundle "${patch_set}" "${dest}" "${ref}" || return 1
+    echo "  ${patch_set}: ${#expected[@]} patches ready (${ref})" >&2
     echo "${dest}"
 }
+

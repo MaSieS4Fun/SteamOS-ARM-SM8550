@@ -7,6 +7,8 @@ OUT_HOME="/home/steamos/BOOT-DEBUG-${TAG}.txt"
 OUT_ROOT="/var/log/sm8550-boot-debug-${TAG}.txt"
 mkdir -p /home/steamos /var/log 2>/dev/null || true
 
+run() { timeout -k 1 4 "$@" 2>/dev/null || true; }
+
 dump() {
   local f="$1"
   {
@@ -17,11 +19,11 @@ dump() {
     cat /proc/cmdline 2>/dev/null || true
     echo
     echo "----- failed units -----"
-    systemctl --failed --no-pager 2>/dev/null || true
+    run systemctl --failed --no-pager || true
     echo
     echo "----- display / seat -----"
-    systemctl is-active sddm.service gamescope-session.service 2>/dev/null || true
-    loginctl 2>/dev/null || true
+    run systemctl is-active sddm.service gamescope-session.service || true
+    run loginctl || true
     echo
     echo "----- drm -----"
     ls -l /sys/class/drm 2>/dev/null || true
@@ -36,27 +38,28 @@ dump() {
     echo "----- modules -----"
     ls -ld /lib/modules /usr/lib/modules /lib/modules/"$(uname -r)" 2>/dev/null || true
     echo
+    echo "----- wifi / ath12k -----"
+    ip -br link 2>/dev/null || true
+    rfkill list 2>/dev/null || true
+    ls /sys/class/net 2>/dev/null || true
+    dmesg 2>/dev/null | grep -iE 'ath12k|mhi |wlan|wlp|WCN7850|aspm|qrtr|IPCR' | tail -n 120 || true
+    echo
     echo "----- dmesg (last 200) -----"
     dmesg -T 2>/dev/null | tail -n 200 || true
     echo
     echo "----- journal errors -----"
-    journalctl -b -p err --no-pager -n 120 2>/dev/null || true
+    run journalctl -b -p err --no-pager -n 80 || true
     echo
     echo "----- journal sddm/gamescope -----"
-    journalctl -b -u sddm --no-pager -n 80 2>/dev/null || true
-    journalctl -b --user-unit gamescope-session.service --no-pager -n 120 2>/dev/null || true
+    run journalctl -b -u sddm --no-pager -n 40 || true
+    run journalctl -b --user-unit gamescope-session.service --no-pager -n 40 || true
     echo
-    echo "----- gamescope paint / drm -----"
-    journalctl -b --user-unit gamescope-session.service --no-pager 2>/dev/null \
-      | grep -iE 'profile=|binary=|game layer tex|paint|composite|drm:|flip|Cannot import FB|vulkan_composite' \
-      | tail -n 60 || true
+    echo "----- gamescope-qam.log (last 80) -----"
+    tail -n 80 /home/steamos/.local/share/qam-debug/gamescope-qam.log 2>/dev/null || true
     echo
-    echo "----- modetest connectors -----"
-    /usr/bin/modetest -M msm -c 2>/dev/null | head -n 40 || true
-    echo
-    echo "----- steam config.vdf display -----"
-    grep -E 'IsExternalDisplay|Internal|External|Windowed|Fullscreen' \
-      /home/steamos/.local/share/Steam/config/config.vdf 2>/dev/null || true
+    echo "----- processes (gamescope/steam/sddm/kwin) -----"
+    ps -eo pid,user,stat,pcpu,pmem,args 2>/dev/null \
+      | grep -E 'gamescope|steam|sddm|kwin|plasmashell' | grep -v grep || true
   } >"$f" 2>&1
 }
 

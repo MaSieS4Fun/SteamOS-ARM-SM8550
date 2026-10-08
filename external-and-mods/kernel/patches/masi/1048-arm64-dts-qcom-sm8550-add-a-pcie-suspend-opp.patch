@@ -1,0 +1,27 @@
+From: MaSi <noreply@masi.local>
+Subject: [PATCH] arm64: dts: qcom: sm8550: add a PCIe suspend OPP
+
+Armada 0520. 1000 kBps floor so AOP still has a PCIe memory-path sleep vote.
+
+---
+--- a/arch/arm64/boot/dts/qcom/sm8550.dtsi	2026-09-29 15:43:48.683974720 +0200
++++ b/arch/arm64/boot/dts/qcom/sm8550.dtsi	2026-09-29 15:43:48.684132062 +0200
+@@ -2464,6 +2464,18 @@
+ 					opp-peak-kBps = <1969000 1>;
+ 					opp-level = <3>;
+ 				};
++
++				/*
++				 * Suspend-only DDR/LLCC floor for the RPMh sleep
++				 * set. opp-hz is synthetic and opp-level is
++				 * absent, so link-speed matching cannot select it.
++				 */
++				opp-suspend-1 {
++					opp-hz = /bits/ 64 <1>;
++					required-opps = <&rpmhpd_opp_min_svs>;
++					opp-peak-kBps = <1000 1>;
++					opp-suspend;
++				};
+ 			};
+ 
+ 			pcieport0: pcie@0 {

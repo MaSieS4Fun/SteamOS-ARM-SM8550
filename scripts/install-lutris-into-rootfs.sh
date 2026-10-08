@@ -26,20 +26,24 @@ fi
 target_python="$(basename "$(readlink -f "$R/usr/bin/python3" 2>/dev/null || true)")"
 target_site="$R/usr/lib/${target_python}/site-packages"
 
+restore_wayland_sonames() {
+  bash "${SCRIPT_DIR}/restore-wayland-after-lutris.sh" "$R"
+}
+
 if [[ -x "$R/usr/bin/lutris" && -d "$target_site/lutris" ]] \
   && chroot "$R" /usr/bin/python3 -c 'import lutris, requests' >/dev/null 2>&1; then
   log "already installed: $R/usr/bin/lutris"
+  # Still retarget Wayland 0.26 — a previous Lutris merge can leave
+  # cursor/server/egl on 0.22 while kwin needs 0.26.
+  restore_wayland_sonames
   exit 0
 fi
 
 # shellcheck source=lib/holo-pkg-install.sh
 source "${SCRIPT_DIR}/lib/holo-pkg-install.sh"
-wayland_client_target="$(readlink "$R/usr/lib/libwayland-client.so.0" 2>/dev/null || true)"
 cleanup() {
   holo_pkg_cleanup
-  if [[ -n "$wayland_client_target" && -e "$R/usr/lib/$wayland_client_target" ]]; then
-    ln -sfn "$wayland_client_target" "$R/usr/lib/libwayland-client.so.0"
-  fi
+  restore_wayland_sonames
 }
 trap cleanup EXIT
 

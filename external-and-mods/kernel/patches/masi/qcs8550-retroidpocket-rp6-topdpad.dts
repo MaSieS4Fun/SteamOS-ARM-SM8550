@@ -1,0 +1,19 @@
+// SPDX-License-Identifier: BSD-3-Clause
+/*
+ * Retroid Pocket 6 TOP-DPAD — same board as RP6 with inverted sticks.
+ * Filename matches config/dtb-chain.map slot 6 (kbuild target).
+ * Armbian ships the same overlay as qcs8550-retroidpocket-rp6-top-dpad.dts.
+ */
+
+/dts-v1/;
+
+#include "qcs8550-retroidpocket-rp6.dts"
+
+/ {
+	model = "Retroid Pocket 6 TOP-DPAD";
+};
+
+&gamepad {
+	invert-x;
+	invert-y;
+};

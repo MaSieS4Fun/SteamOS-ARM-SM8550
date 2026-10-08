@@ -21,7 +21,7 @@
                 "sdrBrightness": 200,
                 "sdrGamutWideness": 0,
                 "transform": "Rotated270",
-                "vrrPolicy": "Automatic",
+                "vrrPolicy": "Never",
                 "wideColorGamut": false
             }
         ],

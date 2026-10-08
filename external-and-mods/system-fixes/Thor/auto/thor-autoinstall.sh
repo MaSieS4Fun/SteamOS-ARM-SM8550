@@ -22,7 +22,9 @@ retire() {
 
 # If a previous image enabled the Thor touch stack on every SM8550, strip it.
 strip_thor_fix() {
-	systemctl disable --now thorch-touchscreen-setup.service >/dev/null 2>&1 || true
+	systemctl disable --now thorch-touchscreen-setup.service \
+		sm8550-thor-gamescope-touch.path \
+		sm8550-thor-gamescope-touch.service >/dev/null 2>&1 || true
 	rm -f \
 		/etc/xdg/autostart/thorch-kwin-touch-map.desktop \
 		/etc/xdg/autostart/thorch-display-setup.desktop \
@@ -76,8 +78,11 @@ apply_fix() {
 	systemctl daemon-reload
 	systemctl enable thorch-touchscreen-setup.service
 	systemctl start thorch-touchscreen-setup.service || true
+	# Game Mode: hide the bottom panel pointer while gamescope is up.
+	systemctl enable sm8550-thor-gamescope-touch.path
+	systemctl start sm8550-thor-gamescope-touch.path || true
 
-	log "Thor touch fix installed and enabled"
+	log "Thor touch fix installed and enabled (Plasma + Game Mode)"
 }
 
 if ! is_thor; then

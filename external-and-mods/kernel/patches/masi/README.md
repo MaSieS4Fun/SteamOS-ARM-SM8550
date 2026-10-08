@@ -1,6 +1,6 @@
 # MaSi kernel overlays (post-Armbian)
 
-Applied after the Armbian `sm8550-7.0` patch set via `lib/kbuild/patches.sh`.
+Applied after the matching Armbian `sm8550-<major.minor>` patch set (live archive + `dt/` board trees) via `lib/kbuild/patches.sh`.
 
 | File | Purpose |
 |------|---------|
@@ -11,6 +11,16 @@ Applied after the Armbian `sm8550-7.0` patch set via `lib/kbuild/patches.sh`.
 | `1005-thor-ch13726a-reset-polarity-fix.patch` | Thor bottom AMOLED: fix inverted reset GPIO in `panel-ddic-ch13726a` |
 | Thor touch (build hook + `fix-thor-screen/`) | `apply_masi_thor_touch_dts` in kernel; userspace via `output/.../fix-thor-screen/fix-thor.sh` — see `docs/THOR-TOUCH.md` |
 | `1024-input-edt-ft5x06-retain-power-in-suspend.patch` | Thor bottom FT5452: skip power-off on deep suspend without wake IRQ |
+| `1032-input-rsinput-suspend-resume-center-sticks.patch` | Center sticks + rumble cancel on suspend/resume |
+| `1047-PCI-qcom-sm8550-skip-l23-and-suspend-opp.patch` | SM8550: skip PCIe L23 poll; honour `opp-suspend` (Armada 0512/0513) |
+| `1048-arm64-dts-qcom-sm8550-add-a-pcie-suspend-opp.patch` | `pcie0` suspend OPP 1000 kBps DDR/LLCC floor (Armada 0520) |
+| `1049-regulator-qcom-rpmh-add-suspend-state-support.patch` | RPMH SLEEP/WAKE votes for `regulator-state-mem` (Armada 0523) |
+| `1050-thermal-qcom-tsens-mask-lower-irqs-across-suspend.patch` | Mask TSENS LOWER IRQs in prepare (Armada 0204) |
+| `1051-tty-serial-qcom-geni-mask-non-console-irq-on-suspend.patch` | Mask gamepad UART IRQ across suspend (Armada 1006) |
+| `1052-input-rsinput-quiesce-mcu-and-drop-vdd-on-suspend.patch` | Drop MCU enable/reset/VDD in suspend (Armada 1005/1007) |
+| `1053` (overlay) | dwc3-qcom: `xhci-skip-phy-init-quirk` so USB PHY can `phy_exit` (Armada 0522; right-side CX heat) |
+| `1054` (overlay) | sdhci-msm: mask controller IRQs while runtime suspended (Armada 0521; mmc0 IRQ storm) |
+| `1055` (overlay) | ath12k: force WCN7850 `power_down` on S2RAM when HW is not OFF |
 | `1014-drm-hdmi-audio-hw-params.patch` | DP/HDMI: call `msm_dp_audio_prepare` from hdmi-codec `hw_params` |
 | `1015-q6apm-dp-graph-start-on-trigger.patch` | DP/HDMI: defer `q6apm_graph_start` to PCM `trigger` |
 | `1025-misc-fastrpc-adsp-sensor-pd-and-legacy-ioctl.patch` | FastRPC SensorsPD routing + PDR + Qualcomm legacy ioctl (gyro) |
@@ -22,7 +32,9 @@ Applied after the Armbian `sm8550-7.0` patch set via `lib/kbuild/patches.sh`.
 | `qcs8550-ayn-haptics.dtsi.frag` | Device-tree nodes for `pm8550b` haptics (all AYN boards) |
 | `qcs8550-retroidpocket-rp6.dts` | Retroid Pocket 6 board DTS |
 
-Patches `1006`–`1013` are the deep-suspend stack (ROCKNIX PR [#2952](https://github.com/ROCKNIX/distribution/pull/2952) / [#2954](https://github.com/ROCKNIX/distribution/pull/2954)). `1013` uses SoC-wide `qcom,sm8550` (not Thor-only). Re-fetch with `scripts/fetch-rocknix-suspend-patches.py` only for **missing** files (`--force` replaces vendored copies — avoid unless intentional). Set `SUSPEND_DEEP_PATCHES=0` to skip.
+Patches `1006`–`1013` are the deep-suspend stack (ROCKNIX PR [#2952](https://github.com/ROCKNIX/distribution/pull/2952) / [#2954](https://github.com/ROCKNIX/distribution/pull/2954)). `1013` uses SoC-wide `qcom,sm8550` (not Thor-only). `1045`/`1046` are xiaodoudou UFS follow-ups (`recover-hibern8-enter-clk-gating`, `hold-clk-gating-across-system-pm`) needed so 7.2.8 does not hang in filesystem sync after a failed idle Hibern8 during suspend.
+
+`1047`–`1054` are the Armada SM8550 energy subset that is compatible with MaSi **deep/S2RAM** (not their s2idle/fake-suspend default): PCIe skip L23 + suspend OPP, RPMH `regulator-state-mem`, TSENS LOWER mask, GENI UART IRQ mask, rsinput MCU quiesce, dwc3 skip-phy, sdhci IRQ mask. `1055` is MaSi: ath12k otherwise skips `power_down` unless `ATH12K_HW_STATE_OFF`. Do **not** force qcom PCIe host/pwrseq teardown when D3cold is not possible (that hung resume). Interconnect QoS (`0122`) is **not** carried (GMU HFI timeouts). Re-fetch with `scripts/fetch-rocknix-suspend-patches.py` only for **missing** 1006–1013 files. Set `SUSPEND_DEEP_PATCHES=0` to skip.
 
 **Apply order:** `1011` (QMP RX LineCfg) runs before `1009`/`1010` so `ufs-qcom.c` hunks still match linux-7.0. The vendored `1011` also anchors on `qmp_ufs_init_registers()` (upstream name) instead of downstream `qmp_ufs_init()`.
 

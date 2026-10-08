@@ -29,20 +29,43 @@ install_file() {
 }
 
 log "restore native steamosctl (same contract as working nofix image)"
-if [[ -x "$R/usr/lib/steamos/steamosctl.real" ]]; then
-  install -m 0755 "$R/usr/lib/steamos/steamosctl.real" "$R/usr/bin/steamosctl"
-  rm -f "$R/usr/lib/steamos/steamosctl.real"
+steamosctl_elf=""
+for cand in \
+  "$R/usr/lib/steamos/steamosctl.real.bin" \
+  "$R/usr/lib/steamos/steamosctl.real" \
+  "$R/usr/bin/steamosctl"
+do
+  [[ -x "$cand" ]] || continue
+  [[ "$(head -c 4 "$cand" | od -An -tx1 | tr -d ' \n')" == 7f454c46 ]] || continue
+  steamosctl_elf="$cand"
+  break
+done
+[[ -n "$steamosctl_elf" ]] || die "native steamosctl ELF missing (looked for steamosctl.real.bin)"
+if [[ "$steamosctl_elf" != "$R/usr/bin/steamosctl" ]]; then
+  install -m 0755 "$steamosctl_elf" "$R/usr/bin/steamosctl"
 fi
-[[ -x "$R/usr/bin/steamosctl" ]] || die "native steamosctl missing"
+rm -f "$R/usr/lib/steamos/steamosctl.real"
 [[ "$(head -c 4 "$R/usr/bin/steamosctl" | od -An -tx1 | tr -d ' \n')" == 7f454c46 ]] \
   || die "steamosctl is not the native ELF binary"
 
-for f in sm8550-prepare-plasma sm8550-startplasma; do
+for f in sm8550-prepare-plasma sm8550-startplasma sm8550-plasma-session; do
   install_file "$OVL/usr/lib/steamos/$f" "$R/usr/lib/steamos/$f" 0755
 done
+install_file "$OVL/usr/lib/steamos/plasma-stubs/kdeinit5_shutdown" \
+  "$R/usr/lib/steamos/plasma-stubs/kdeinit5_shutdown" 0755
+install_file "$OVL/usr/lib/steamos/plasma-stubs/qdbus" \
+  "$R/usr/lib/steamos/plasma-stubs/qdbus" 0755
+install_file "$OVL/usr/lib/steamos/plasma-stubs/kdeinit5_shutdown" \
+  "$R/usr/bin/kdeinit5_shutdown" 0755
 install_file "$OVL/usr/lib/steamos/sm8550-preserve-sddm-session" \
   "$R/usr/lib/steamos/sm8550-preserve-sddm-session" 0755
-for unit in sm8550-preserve-sddm-session.path sm8550-preserve-sddm-session.service; do
+install_file "$OVL/usr/lib/steamos/sm8550-reset-sddm-session" \
+  "$R/usr/lib/steamos/sm8550-reset-sddm-session" 0755
+for unit in \
+  sm8550-preserve-sddm-session.path \
+  sm8550-preserve-sddm-session.service \
+  sm8550-reset-sddm-session.service
+do
   install_file "$OVL/usr/lib/systemd/system/$unit" \
     "$R/usr/lib/systemd/system/$unit" 0644
 done
@@ -59,7 +82,8 @@ rm -f \
   "$R/etc/systemd/system/graphical.target.wants/sm8550-session-switch-listener.service" \
   "$R/usr/lib/systemd/system/sm8550-session-switch-listener.service" \
   "$R/usr/lib/steamos/sm8550-session-switch-listener" \
-  "$R/etc/sddm.conf.d/zzz-sm8550-session-override.conf"
+  "$R/etc/sddm.conf.d/zzz-sm8550-session-override.conf" \
+  "$R/var/lib/overlays/etc/upper/sddm.conf.d/zzz-sm8550-session-override.conf"
 
 install_file "$OVL/usr/lib/systemd/user/sm8550-plasma-env.service" \
   "$R/usr/lib/systemd/user/sm8550-plasma-env.service" 0644
@@ -118,7 +142,20 @@ grep -q sm8550-startplasma "$R/usr/share/wayland-sessions/plasma.desktop" || die
 grep -q 'sm8550-preserve-sddm-session.path' \
   "$R/usr/lib/systemd/system/sddm.service.d/reset-oneshot-boot.conf" \
   || die "SDDM session preservation path is not enabled"
+grep -q 'sm8550-reset-sddm-session.service' \
+  "$R/usr/lib/systemd/system/sddm.service.d/reset-oneshot-boot.conf" \
+  || die "SDDM boot reset of one-shot Plasma is not enabled"
+[[ -x "$R/usr/lib/steamos/sm8550-reset-sddm-session" ]] \
+  || die "sm8550-reset-sddm-session missing"
+[[ ! -e "$R/var/lib/overlays/etc/upper/sddm.conf.d/zzz-sm8550-session-override.conf" ]] \
+  || die "baked image still pins Plasma via overlay SDDM override"
 [[ ! -e "$R/usr/lib/systemd/system/sm8550-session-switch-listener.service" ]] \
   || die "experimental SDDM listener still installed"
 [[ ! -f "$R/usr/share/xsessions/plasmax11.desktop" ]] || die "plasmax11 still visible"
-log "OK — Switch to Desktop → Plasma Wayland"
+grep -q 'failed quickly' "$R/usr/lib/steamos/sm8550-startplasma" \
+  || die "sm8550-startplasma must fallback to kwin when startplasma-wayland dies immediately"
+grep -q 'kwin_wayland --xwayland' "$R/usr/lib/steamos/sm8550-startplasma" \
+  || die "sm8550-startplasma missing kwin fallback"
+[[ -x "$R/usr/lib/steamos/sm8550-plasma-session" ]] \
+  || die "sm8550-plasma-session missing"
+log "OK — Switch to Desktop → Plasma Wayland; reboot returns to Game Mode"

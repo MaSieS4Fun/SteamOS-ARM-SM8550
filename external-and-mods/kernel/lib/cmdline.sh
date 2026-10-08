@@ -247,6 +247,14 @@ build_unified_abl_cmdline() {
     parts+=(
         "rootfstype=ext4"
         "errors=remount-ro"
+        # Root-port ASPM L1 leaves 7.2.8 ath12k_wifi7 stuck after MHI power-on
+        # (no wlan) with the pinned 7.0.14 WCN7850 AMSS. Endpoint-only clear
+        # in the driver is not enough; disable ASPM on the whole hierarchy.
+        "pcie_aspm=off"
+        # Output polling calls detect() on DP/HDMI and can hold the DRM
+        # modeset lock until AUX/EDID times out. The panel then stops
+        # flipping (hard freeze). HPD still reports dock connect/disconnect.
+        "drm_kms_helper.poll=0"
     )
 
     _append_abl_cmdline_extras parts
@@ -300,7 +308,6 @@ _append_abl_cmdline_extras() {
             "ignore_loglevel"
             "loglevel=8"
             "log_buf_len=2M"
-            "drm.debug=0x04"
             "fw_devlink=0"
         )
     fi

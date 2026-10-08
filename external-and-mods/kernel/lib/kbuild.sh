@@ -4,7 +4,7 @@
 #
 # Usage:
 #   ./lib/kbuild.sh
-#   KERNEL_VER=7.0.14 ./lib/kbuild.sh
+#   KERNEL_VER=7.2.8 ./lib/kbuild.sh
 #   DEVICE_TARGET=odin2 ./lib/kbuild.sh
 #
 set -euo pipefail
@@ -120,7 +120,7 @@ kbuild_main() {
     BUILD_KERNEL_VER="${kernel_ver}"
     export BUILD_OUT_DIR BUILD_RELEASE BUILD_KERNEL_VER
 
-    log "Kernel: linux-${kernel_ver} (${patch_set}) — source tarball from kernel.org; SM8550 patches from Armbian ${patch_set}"
+    log "Kernel: linux-${kernel_ver} (${patch_set}) — source from kernel.org; SM8550 patches from live Armbian ${patch_set}"
     log "Output: ${BUILD_OUT_DIR}/"
     [[ "${DEBUG_BOOTLOG:-0}" == "1" ]] && \
         log "DEBUG_BOOTLOG=1 — boot log → /boot/masi-boot.log on device"

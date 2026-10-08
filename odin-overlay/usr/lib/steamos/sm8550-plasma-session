@@ -1,0 +1,56 @@
+#!/bin/bash
+# Child of kwin_wayland --exit-with-session. KWin is already up (Xwayland too).
+LOG="${HOME:-/home/steamos}/.local/state/sm8550-plasma-start.log"
+log() { printf '%s\n' "$*" >>"$LOG" 2>/dev/null || true; }
+log "plasma-session WAYLAND_DISPLAY=${WAYLAND_DISPLAY-} DISPLAY=${DISPLAY-} QT=${QT_QPA_PLATFORM-}"
+
+export QT_QPA_PLATFORM="${QT_QPA_PLATFORM:-wayland}"
+export XDG_SESSION_TYPE=wayland
+export XDG_CURRENT_DESKTOP=KDE
+export XDG_SESSION_DESKTOP=KDE
+export DESKTOP_SESSION=plasma
+# Apps / Steam OSK. KWin is the parent compositor and does not inherit this.
+export QT_IM_MODULE=steam
+export GTK_IM_MODULE=steam
+unset XMODIFIERS || true
+
+if command -v systemctl >/dev/null 2>&1; then
+  systemctl --user import-environment \
+    WAYLAND_DISPLAY DISPLAY QT_QPA_PLATFORM XDG_SESSION_TYPE \
+    XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP DESKTOP_SESSION \
+    QT_IM_MODULE GTK_IM_MODULE >/dev/null 2>&1 || true
+  # Workspace helpers without a second kwin/plasmashell.
+  systemctl --user start \
+    plasma-ksmserver.service \
+    plasma-kded6.service \
+    plasma-polkit-agent.service \
+    plasma-xdg-desktop-portal-kde.service \
+    plasma-kglobalaccel.service \
+    plasma-powerdevil.service \
+    >/dev/null 2>&1 || true
+fi
+if command -v dbus-update-activation-environment >/dev/null 2>&1; then
+  dbus-update-activation-environment --systemd \
+    WAYLAND_DISPLAY DISPLAY QT_QPA_PLATFORM XDG_SESSION_TYPE \
+    XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP DESKTOP_SESSION \
+    QT_IM_MODULE GTK_IM_MODULE >/dev/null 2>&1 || true
+fi
+
+if [[ -x /usr/lib/steamos/sm8550-plasma-portal-perms ]]; then
+  /usr/lib/steamos/sm8550-plasma-portal-perms >/dev/null 2>&1 || true
+fi
+
+# Wait out Game Mode Steam so we do not skip desktop Steam (OSK / Steam Input).
+i=0
+while (( i < 25 )); do
+  pgrep -f 'steamrtarm64/steam' >/dev/null 2>&1 || break
+  sleep 0.2
+  i=$((i + 1))
+done
+if [[ -x /usr/lib/steamos/sm8550-plasma-steam-start ]]; then
+  log "start desktop Steam"
+  /usr/lib/steamos/sm8550-plasma-steam-start >>"$LOG" 2>&1 || log "steam-start rc=$?"
+fi
+
+log "exec plasmashell"
+exec /usr/bin/plasmashell --no-respawn

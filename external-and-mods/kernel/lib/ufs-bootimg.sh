@@ -8,7 +8,7 @@
 # Keep in sync with scripts/ufs-linux/ufs-bootimg.sh (installed by update.sh).
 set -euo pipefail
 
-UFS_INTERNAL_CMDLINE='clk_ignore_unused pd_ignore_unused quiet rw rootwait root=PARTLABEL=STORAGE rootfstype=ext4 errors=remount-ro mem_sleep_default=deep ufshcd_core.uic_cmd_timeout=3000'
+UFS_INTERNAL_CMDLINE='clk_ignore_unused pd_ignore_unused quiet rw rootwait root=PARTLABEL=STORAGE rootfstype=ext4 errors=remount-ro pcie_aspm=off drm_kms_helper.poll=0 mem_sleep_default=deep ufshcd_core.uic_cmd_timeout=3000'
 
 read_bootimg_cmdline() {
     local kernel="$1"

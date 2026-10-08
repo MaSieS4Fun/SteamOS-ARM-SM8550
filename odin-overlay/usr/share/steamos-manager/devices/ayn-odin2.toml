@@ -18,3 +18,37 @@ friendly_name = "AYN Odin 2 Portal"
 
 [inputplumber]
 target_devices = ["deck-uhid", "keyboard"]
+
+[gpu_performance]
+driver = "devfreq"
+sysfs_path = "/sys/devices/platform/soc@0/3d00000.gpu/devfreq/3d00000.gpu"
+min_freq = 220
+
+[performance_profile]
+platform_profile_driver = "custom"
+suggested_default = "Balanced"
+
+[[performance_profile.custom_profile]]
+name = "Performance"
+cpufreq = [
+  { policy = 0, max = 2016000 },
+  { policy = 3, max = 2803200 },
+  { policy = 7, max = 2956800 },
+]
+
+[[performance_profile.custom_profile]]
+name = "Balanced"
+cpufreq = [
+  { policy = 0, max = 1555200 },
+  { policy = 3, max = 2054400 },
+  { policy = 7, max = 2092800 },
+]
+
+[[performance_profile.custom_profile]]
+name = "Basic"
+cpufreq = [
+  { policy = 0, max = 1459200 },
+  { policy = 3, max = 1785600 },
+  { policy = 7, max = 1843200 },
+]
+gpufreq_limit = 550

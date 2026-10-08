@@ -1,25 +1,7 @@
 #!/usr/bin/env bash
-# Watch DP/HDMI connect/disconnect during Game Mode.
-# gamescope stays on DSI (--force-internal); this only keeps Steam config stable
-# and logs hotplug events. Does not restart Steam or gamescope.
-set +e
-
-log() { echo "sm8550-dock-hotplug: $*" | logger -t sm8550-dock; }
-
-last=unknown
-while sleep 2; do
-  cur=off
-  for f in /sys/class/drm/card*-DP-*/status /sys/class/drm/card*-HDMI-A-*/status; do
-    [[ -r "$f" ]] || continue
-    [[ "$(tr -d '[:space:]' <"$f")" == connected ]] && cur=on && break
-  done
-  [[ "$cur" == "$last" ]] && continue
-  log "dock ${last} -> ${cur}"
-  last="$cur"
-  if [[ -x /usr/lib/steamos/sm8550-fix-steam-display ]]; then
-    /usr/lib/steamos/sm8550-fix-steam-display 2>&1 | logger -t sm8550-dock || true
-  fi
-  if [[ -x /usr/lib/steamos/sm8550-disable-external-x11 && "${SM8550_DOCK_DISPLAY:-0}" != "1" ]]; then
-    DISPLAY="${DISPLAY:-:0}" /usr/lib/steamos/sm8550-disable-external-x11 2>&1 | logger -t sm8550-dock || true
-  fi
-done
+# Game Mode keeps scanout on the internal panel. gamescope drops DP/HDMI
+# without an EDID probe while GAMESCOPE_FORCE_INTERNAL=1. An X11 output
+# query here would probe the dock and can freeze the panel the same way.
+# Desktop dock layout is handled by sm8550-plasma-display.
+echo "sm8550-dock-hotplug: external connectors stay with gamescope" | logger -t sm8550-dock || true
+exit 0

@@ -337,6 +337,15 @@ enumerate_kernel_menu_versions() {
     max="${KERNEL_VERSIONS_PER_SERIES:-8}"
     per=$(( max * ${#ARMBIAN_KERNEL_SERIES[@]} + 4 ))
 
+    # Already-extracted trees first (e.g. .cache/linux-7.2.8).
+    local cached
+    for cached in "${CACHE_DIR:-/tmp}"/linux-*; do
+        [[ -f "${cached}/Makefile" ]] || continue
+        ver="${cached##*/linux-}"
+        kernel_is_supported "${ver}" || continue
+        versions+=("${ver}")
+    done
+
     for series in "${ARMBIAN_KERNEL_SERIES[@]}"; do
         echo "  → ${series}.x (${ARMBIAN_SERIES_PATCH_SET[$series]:-?}) ..." >&2
         n=0
@@ -410,6 +419,7 @@ resolve_kernel_version() {
     fi
 
     echo "No compatible versions (need published Armbian sm8550-* patches)." >&2
-    echo "Try: KERNEL_VER=7.2.2 ./make.sh  (needs config/armbian-manifests/sm8550-7.2.txt)" >&2
+    echo "  Live series: GitHub armbian/build patch/kernel/archive/sm8550-<major.minor>" >&2
+    echo "  Try: KERNEL_VER=7.2.8 ./make.sh" >&2
     return 1
 }

@@ -98,7 +98,7 @@ ui_select_kernel() {
 
     [[ ${#versions[@]} -gt 0 ]] || {
         echo "No compatible versions — only kernels with a published Armbian sm8550-<series> patch set are listed." >&2
-        echo "Try: KERNEL_VER=7.0.14 ./make.sh" >&2
+        echo "Try: KERNEL_VER=7.2.8 ./make.sh" >&2
         return 1
     }
 

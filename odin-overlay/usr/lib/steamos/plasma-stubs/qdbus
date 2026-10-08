@@ -1,0 +1,2 @@
+#!/bin/sh
+exec /usr/lib/qt6/bin/qdbus "$@"

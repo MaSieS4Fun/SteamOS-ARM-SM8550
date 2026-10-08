@@ -1,0 +1,15 @@
+[Unit]
+Description=Stop DRM connector poll before poweroff
+DefaultDependencies=no
+Before=shutdown.target reboot.target halt.target umount.target
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/steamos/sm8550-drm-poll off
+TimeoutStartSec=3
+
+[Install]
+WantedBy=halt.target
+WantedBy=reboot.target
+WantedBy=shutdown.target

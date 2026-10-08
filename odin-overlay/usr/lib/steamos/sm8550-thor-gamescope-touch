@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# AYN Thor + Game Mode only. Same contract as Armada:
+#   https://github.com/armada-os/armada
+#   devices/ayn-thor.conf + touchscreen-inhibit + sessions.d/steam
+# Gamescope lights DSI-2 only; inhibit bottom_touchscreen so the dark glass
+# cannot move Steam's cursor. Desktop (KWin/thorch) is unchanged.
+set -euo pipefail
+
+BOTTOM_NAME="${SM8550_THOR_BOTTOM_TOUCH:-bottom_touchscreen}"
+
+is_thor() {
+  [[ -f /proc/device-tree/compatible ]] || return 1
+  tr -d '\0' < /proc/device-tree/compatible | grep -q 'ayn,thor'
+}
+
+# Armada: echo 1 > /sys/class/input/inputN/inhibited for name=bottom_touchscreen.
+# Fallback: FT5452 on 98c000 if the evdev name is not the DT label.
+set_inhibited() {
+  local want="$1" name phys dev found=0
+  for dev in /sys/class/input/input*/; do
+    [[ -f "${dev}name" && -w "${dev}inhibited" ]] || continue
+    name="$(tr -d '\0' < "${dev}name" 2>/dev/null || true)"
+    phys="$(tr -d '\0' < "${dev}phys" 2>/dev/null || true)"
+    if [[ "${name}" == "${BOTTOM_NAME}" ]] \
+      || [[ "${phys}" == *98c000* ]]; then
+      echo "${want}" > "${dev}inhibited" || true
+      found=1
+    fi
+  done
+  [[ "${found}" -eq 1 ]]
+}
+
+gamescope_socket_present() {
+  local s
+  for s in /run/user/*/gamescope-0; do
+    [[ -S "${s}" ]] && return 0
+  done
+  return 1
+}
+
+cmd="${1:-start}"
+case "${cmd}" in
+  start)
+    is_thor || exit 0
+    set_inhibited 1 || true
+    ;;
+  stop)
+    is_thor || exit 0
+    set_inhibited 0 || true
+    ;;
+  watch)
+    is_thor || exit 0
+    set_inhibited 1 || true
+    while gamescope_socket_present; do
+      sleep 1
+    done
+    set_inhibited 0 || true
+    ;;
+  *)
+    echo "Usage: $0 start|stop|watch" >&2
+    exit 2
+    ;;
+esac

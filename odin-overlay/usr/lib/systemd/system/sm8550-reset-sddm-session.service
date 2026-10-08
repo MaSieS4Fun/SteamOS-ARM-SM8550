@@ -1,0 +1,10 @@
+[Unit]
+Description=Reset one-shot Plasma so reboot returns to Game Mode
+DefaultDependencies=no
+After=local-fs.target home.mount
+Before=sddm.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/steamos/sm8550-reset-sddm-session
+RemainAfterExit=yes

@@ -1,14 +1,76 @@
 #!/bin/bash
-# Official startplasma-wayland, after clearing Game Mode Qt/X11 leftovers.
-/usr/bin/steamosctl clean-temporary-sessions >/dev/null 2>&1 || true
-OVERRIDE=/etc/sddm.conf.d/zzz-sm8550-session-override.conf
-if [[ -w "$OVERRIDE" ]]; then
-  cat >"$OVERRIDE" <<'EOF'
-[Autologin]
-Relogin=true
-Session=gamescope-wayland.desktop
-User=steamos
-EOF
+# startplasma-wayland on this handheld exits 0 after a few seconds (kdeinit
+# stub / compositor never stays). Treat a *quick* death as a failed start and
+# run kwin+plasmashell — that is the desktop that actually stays up.
+# A long-running session that then exits is logout / Return to Gaming: do not
+# start a second Plasma (zzt is already gamescope).
+LOG_DIR="${HOME:-/home/steamos}/.local/state"
+LOG="${LOG_DIR}/sm8550-plasma-start.log"
+mkdir -p "$LOG_DIR" 2>/dev/null || true
+log() { printf '%s\n' "$*" >>"$LOG" 2>/dev/null || true; }
+
+log "===== $(date -Iseconds 2>/dev/null || date) pid=$$ startplasma-wayland ====="
+
+export PATH="/usr/lib/steamos/plasma-stubs:${PATH}"
+
+# shellcheck disable=SC1091
+source /usr/lib/steamos/sm8550-prepare-plasma
+
+export QT_QPA_PLATFORM=wayland
+export XDG_SESSION_TYPE=wayland
+export XDG_CURRENT_DESKTOP=KDE
+export XDG_SESSION_DESKTOP=KDE
+export DESKTOP_SESSION=plasma
+unset GAMESCOPE_WAYLAND_DISPLAY WAYLAND_DISPLAY DISPLAY XAUTHORITY || true
+
+if [[ -z "${DBUS_SESSION_BUS_ADDRESS:-}" && -n "${XDG_RUNTIME_DIR:-}" && -S "${XDG_RUNTIME_DIR}/bus" ]]; then
+  export DBUS_SESSION_BUS_ADDRESS="unix:path=${XDG_RUNTIME_DIR}/bus"
 fi
-/usr/lib/steamos/sm8550-prepare-plasma
-exec /usr/bin/startplasma-wayland "$@"
+if [[ -e /dev/dri/card0 ]]; then
+  export KWIN_DRM_DEVICES=/dev/dri/card0
+fi
+
+if command -v systemctl >/dev/null 2>&1; then
+  if systemctl --user is-active --quiet gamescope-session.service 2>/dev/null; then
+    systemctl --user stop gamescope-session.service >>"$LOG" 2>&1 || true
+  fi
+fi
+
+log "QT=${QT_QPA_PLATFORM-} SESSION=${XDG_SESSION_TYPE-} DBUS=${DBUS_SESSION_BUS_ADDRESS-} kdeinit=$(command -v kdeinit5_shutdown)"
+log "exec startplasma-wayland"
+
+t0=$(date +%s)
+/usr/bin/env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY -u GAMESCOPE_WAYLAND_DISPLAY \
+  QT_QPA_PLATFORM=wayland \
+  XDG_SESSION_TYPE=wayland \
+  XDG_CURRENT_DESKTOP=KDE \
+  XDG_SESSION_DESKTOP=KDE \
+  DESKTOP_SESSION=plasma \
+  PATH="/usr/lib/steamos/plasma-stubs:${PATH}" \
+  /usr/bin/startplasma-wayland "$@" >>"$LOG" 2>&1
+rc=$?
+t1=$(date +%s)
+elapsed=$((t1 - t0))
+log "startplasma-wayland exited rc=$rc after ${elapsed}s"
+
+# Return to Gaming already pointed SDDM at gamescope after a real desktop session.
+if (( elapsed >= 8 )) && grep -qE '^[[:space:]]*Session[[:space:]]*=[[:space:]]*gamescope' \
+  /etc/sddm.conf.d/zzt-steamos-temp-login.conf 2>/dev/null; then
+  log "zzt session is gamescope after ${elapsed}s — no Plasma fallback"
+  exit 0
+fi
+if (( elapsed >= 12 )); then
+  log "session ran ${elapsed}s — treat as ended, no fallback"
+  exit "$rc"
+fi
+
+log "failed quickly rc=$rc after ${elapsed}s — fallback kwin_wayland + plasmashell"
+exec /usr/bin/env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY -u GAMESCOPE_WAYLAND_DISPLAY \
+  QT_QPA_PLATFORM=wayland \
+  XDG_SESSION_TYPE=wayland \
+  XDG_CURRENT_DESKTOP=KDE \
+  XDG_SESSION_DESKTOP=KDE \
+  DESKTOP_SESSION=plasma \
+  PATH="/usr/lib/steamos/plasma-stubs:${PATH}" \
+  /usr/bin/kwin_wayland --xwayland \
+  --exit-with-session /usr/lib/steamos/sm8550-plasma-session >>"$LOG" 2>&1

@@ -162,7 +162,7 @@ function getDefaults() {
         mangohud_workaround: false,
         disable_vkbasalt: false,
         force_enable_vkbasalt: false,
-        enable_wsi: false,
+        enable_wsi: true,
         enable_zink: false,
     };
 }

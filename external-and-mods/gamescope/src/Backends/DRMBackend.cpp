@@ -782,6 +782,42 @@ void flip_handler_thread_run(void)
 	}
 }
 
+// DP/HDMI detect() reads EDID over AUX. drmModeGetConnector() triggers that
+// probe and can sit in the kernel holding the DRM modeset lock, so the
+// internal panel stops flipping until the dock link times out. That is the
+// hard freeze on plug/unplug. drmModeGetConnectorCurrent() only reads the
+// cached HPD state.
+static bool drm_connector_is_external_type( uint32_t uType )
+{
+	switch ( uType )
+	{
+		case DRM_MODE_CONNECTOR_VGA:
+		case DRM_MODE_CONNECTOR_DVII:
+		case DRM_MODE_CONNECTOR_DVID:
+		case DRM_MODE_CONNECTOR_DVIA:
+		case DRM_MODE_CONNECTOR_Composite:
+		case DRM_MODE_CONNECTOR_SVIDEO:
+		case DRM_MODE_CONNECTOR_Component:
+		case DRM_MODE_CONNECTOR_9PinDIN:
+		case DRM_MODE_CONNECTOR_DisplayPort:
+		case DRM_MODE_CONNECTOR_HDMIA:
+		case DRM_MODE_CONNECTOR_HDMIB:
+		case DRM_MODE_CONNECTOR_TV:
+		case DRM_MODE_CONNECTOR_VIRTUAL:
+		case DRM_MODE_CONNECTOR_USB:
+			return true;
+		default:
+			return false;
+	}
+}
+
+static drmModeConnector *drm_get_connector_for_refresh( int nFd, uint32_t uConnectorId )
+{
+	if ( g_bForceInternal )
+		return drmModeGetConnectorCurrent( nFd, uConnectorId );
+	return drmModeGetConnector( nFd, uConnectorId );
+}
+
 static bool refresh_state( drm_t *drm )
 {
 	drmModeRes *pResources = drmModeGetResources( drm->fd );
@@ -797,7 +833,7 @@ static bool refresh_state( drm_t *drm )
 	{
 		uint32_t uConnectorId = pResources->connectors[i];
 
-		drmModeConnector *pConnector = drmModeGetConnector( drm->fd, uConnectorId );
+		drmModeConnector *pConnector = drm_get_connector_for_refresh( drm->fd, uConnectorId );
 		if ( !pConnector )
 			continue;
 
@@ -812,12 +848,35 @@ static bool refresh_state( drm_t *drm )
 			}
 		}
 
+		// Game Mode keeps scanout on the handheld panel. Drop DP/HDMI before
+		// any probing GetConnector, and do not expose them to Xwayland.
+		if ( g_bForceInternal && drm_connector_is_external_type( pConnector->connector_type ) )
+		{
+			drm_log.infof( "ignoring external connector id %u (force internal, no EDID probe)", uConnectorId );
+			drmModeFreeConnector( pConnector );
+			auto itExternal = drm->connectors.find( uConnectorId );
+			if ( itExternal != drm->connectors.end() )
+			{
+				if ( drm->pConnector == &itExternal->second )
+				{
+					drm_log.infof( "current connector was external; releasing it" );
+					drm->pConnector = nullptr;
+				}
+				drm->connectors.erase( itExternal );
+			}
+			continue;
+		}
+
 		if ( !drm->connectors.contains( uConnectorId ) )
 		{
 			drm->connectors.emplace(
 				std::piecewise_construct,
 				std::forward_as_tuple( uConnectorId ),
 				std::forward_as_tuple( reinterpret_cast<gamescope::CDRMBackend *>( GetBackend() ), pConnector ) );
+		}
+		else
+		{
+			drmModeFreeConnector( pConnector );
 		}
 	}
 
@@ -2146,13 +2205,34 @@ namespace gamescope
 		// Connectors can be re-plugged.
 
 		// TODO: Clean this up.
+		const uint32_t uConnectorId = m_pConnector ? m_pConnector->connector_id : 0;
+		if ( !uConnectorId )
+			return;
+
+		drmModeConnector *pFresh = drm_get_connector_for_refresh( g_DRM.fd, uConnectorId );
+		if ( !pFresh )
+		{
+			drm_log.errorf( "connector %u refresh failed", uConnectorId );
+			return;
+		}
+		// Cached snapshot of the internal panel can have no modes yet.
+		if ( g_bForceInternal && !drm_connector_is_external_type( pFresh->connector_type ) )
+		{
+			drmModeConnector *pProbed = drmModeGetConnector( g_DRM.fd, uConnectorId );
+			if ( pProbed )
+			{
+				drmModeFreeConnector( pFresh );
+				pFresh = pProbed;
+			}
+		}
 		m_pConnector = CAutoDeletePtr< drmModeConnector >
 		{
-			drmModeGetConnector( g_DRM.fd, m_pConnector->connector_id ),
+			pFresh,
 			[]( drmModeConnector *pConnector ){ drmModeFreeConnector( pConnector ); }
 		};
 
-		// Sort the modes to our preference.
+		// Sort the modes to our preference. count_modes == 0 leaves modes == nullptr.
+		if ( m_pConnector->modes && m_pConnector->count_modes > 1 )
 		std::stable_sort( m_pConnector->modes, m_pConnector->modes + m_pConnector->count_modes, []( const drmModeModeInfo &a, const drmModeModeInfo &b )
 		{
 			bool bGoodRefreshA = a.vrefresh >= 60;

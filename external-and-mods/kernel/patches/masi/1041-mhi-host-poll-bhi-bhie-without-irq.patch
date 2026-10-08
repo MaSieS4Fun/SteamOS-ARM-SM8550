@@ -1,0 +1,126 @@
+From: MaSi-OS <masies@local>
+Subject: [PATCH] bus: mhi: host: poll BHI/BHIE completion without MSI
+
+wait_event_timeout() only re-reads BHI_STATUS when an IRQ wakes the
+queue. On SM8550 7.2.8, ath12k WCN7850 MSI never wakes that wait after
+mhi_init_irq_setup() disable_irq()/enable_irq(), so boot sits at
+"mhi Power on setup success" and no wlan appears. 7.0.14 on the same
+hardware proceeds to SBL in ~40ms.
+
+Poll the status MMIO like mhi_ready_state_transition() already does.
+
+Signed-off-by: MaSi-OS <masies@local>
+
+diff -u -N -r a/drivers/bus/mhi/host/boot.c b/drivers/bus/mhi/host/boot.c
+--- a/drivers/bus/mhi/host/boot.c
++++ b/drivers/bus/mhi/host/boot.c
+@@ -10,6 +10,7 @@
+ #include <linux/firmware.h>
+ #include <linux/interrupt.h>
++#include <linux/jiffies.h>
+ #include <linux/list.h>
+ #include <linux/mhi.h>
+ #include <linux/module.h>
+@@ -18,6 +19,38 @@
+ #include <linux/wait.h>
+ #include "internal.h"
+ 
++/*
++ * BHI/BHIE completion is advertised in MMIO. wait_event_timeout only
++ * rechecks that MMIO when an IRQ wakes the queue. On SM8550 7.2.8 the
++ * qcom-pcie MSI for WCN7850 never wakes this wait after mhi_init_irq_setup
++ * disable_irq()/enable_irq(), so firmware load sits on
++ * "Power on setup success" and no wlan appears. Poll the status bit.
++ */
++static int mhi_fw_poll_status(struct mhi_controller *mhi_cntrl,
++			      void __iomem *base, u32 offset, u32 mask,
++			      u32 *status)
++{
++	unsigned long timeout = jiffies + msecs_to_jiffies(mhi_cntrl->timeout_ms);
++	int ret;
++
++	*status = 0;
++	do {
++		if (MHI_PM_IN_ERROR_STATE(mhi_cntrl->pm_state))
++			return -EIO;
++
++		ret = mhi_read_reg_field(mhi_cntrl, base, offset, mask, status);
++		if (ret)
++			return ret;
++		if (*status)
++			return 0;
++
++		usleep_range(5000, 10000);
++	} while (time_before(jiffies, timeout));
++
++	return -ETIMEDOUT;
++}
++
+ /* Setup RDDM vector table for RDDM transfer and program RXVEC */
+ int mhi_rddm_prepare(struct mhi_controller *mhi_cntrl,
+ 		     struct image_info *img_info)
+@@ -240,19 +273,14 @@
+ 	if (ret)
+ 		return ret;
+ 
+-	/* Wait for the image download to complete */
+-	ret = wait_event_timeout(mhi_cntrl->state_event,
+-				 MHI_PM_IN_ERROR_STATE(mhi_cntrl->pm_state) ||
+-				 mhi_read_reg_field(mhi_cntrl, base,
+-						   BHIE_TXVECSTATUS_OFFS,
+-						   BHIE_TXVECSTATUS_STATUS_BMSK,
+-						   &tx_status) || tx_status,
+-				 msecs_to_jiffies(mhi_cntrl->timeout_ms));
++	ret = mhi_fw_poll_status(mhi_cntrl, base, BHIE_TXVECSTATUS_OFFS,
++				 BHIE_TXVECSTATUS_STATUS_BMSK, &tx_status);
++	if (ret)
++		return ret;
+ 	if (MHI_PM_IN_ERROR_STATE(mhi_cntrl->pm_state) ||
+ 	    tx_status != BHIE_TXVECSTATUS_STATUS_XFER_COMPL)
+ 		return -EIO;
+ 
+-	return (!ret) ? -ETIMEDOUT : 0;
++	return 0;
+ }
+ 
+ static int mhi_fw_load_bhi(struct mhi_controller *mhi_cntrl,
+@@ -280,13 +308,16 @@
+ 	mhi_write_reg(mhi_cntrl, base, BHI_IMGTXDB, session_id);
+ 	read_unlock_bh(pm_lock);
+ 
+-	/* Wait for the image download to complete */
+-	ret = wait_event_timeout(mhi_cntrl->state_event,
+-			   MHI_PM_IN_ERROR_STATE(mhi_cntrl->pm_state) ||
+-			   mhi_read_reg_field(mhi_cntrl, base, BHI_STATUS,
+-					      BHI_STATUS_MASK, &tx_status) || tx_status,
+-			   msecs_to_jiffies(mhi_cntrl->timeout_ms));
++	dev_info(dev, "BHI image download %zu bytes\n", mhi_buf->len);
++	ret = mhi_fw_poll_status(mhi_cntrl, base, BHI_STATUS,
++				 BHI_STATUS_MASK, &tx_status);
++	if (ret) {
++		dev_err(dev, "BHI image download timed out, ret: %d\n", ret);
++		goto invalid_pm_state;
++	}
+ 	if (MHI_PM_IN_ERROR_STATE(mhi_cntrl->pm_state))
+ 		goto invalid_pm_state;
+ 
+@@ -298,7 +329,8 @@
+ 		goto invalid_pm_state;
+ 	}
+ 
+-	return (!ret) ? -ETIMEDOUT : 0;
++	dev_info(dev, "BHI image download complete, status %u\n", tx_status);
++	return 0;
+ 
+ invalid_pm_state:
+ 
+@@ -538,6 +570,9 @@
+ 
+ skip_req_fw:
+ 	fw_load_type = mhi_fw_load_type_get(mhi_cntrl);
++	dev_info(dev, "Loading firmware (%s, %zu bytes)\n",
++		 fw_load_type == MHI_FW_LOAD_FBC ? "BHI+FBC" :
++		 fw_load_type == MHI_FW_LOAD_BHIE ? "BHIe" : "BHI", size);
+ 	if (fw_load_type == MHI_FW_LOAD_BHIE)
+ 		ret = mhi_load_image_bhie(mhi_cntrl, fw_data, size);
+ 	else

@@ -18,6 +18,12 @@ case "$session" in
     steamosctl switch-to-desktop-mode
     ;;
   gamescope)
+    # Pin speakers and stop connector poll before Plasma releases the dock.
+    # Otherwise the unplug races a DisplayPort profile and a DRM detect(),
+    # Game Mode comes up silent, and reboot can sit on a lit panel.
+    mkdir -p "${HOME:-/home/steamos}/.local/state"
+    touch "${HOME:-/home/steamos}/.local/state/sm8550-force-speaker"
+    /usr/lib/steamos/sm8550-drm-poll off >/dev/null 2>&1 || true
     steamosctl set-default-login-mode game
     steamosctl switch-to-game-mode
     ;;

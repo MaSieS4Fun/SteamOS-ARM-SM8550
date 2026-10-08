@@ -1,0 +1,173 @@
+From: MaSi <noreply@masi.local>
+Subject: [PATCH] regulator: qcom-rpmh: add suspend-state (SLEEP/WAKE TCS) support
+
+Armada 0523. Rails with regulator-state-mem can vote the RPMh SLEEP set.
+
+---
+--- a/drivers/regulator/qcom-rpmh-regulator.c	2026-09-29 15:43:48.687362337 +0200
++++ b/drivers/regulator/qcom-rpmh-regulator.c	2026-09-29 15:43:48.687467492 +0200
+@@ -206,8 +206,16 @@
+ 	else
+ 		ret = rpmh_write_async(vreg->dev, RPMH_ACTIVE_ONLY_STATE, cmd,
+ 					1);
++	if (ret < 0)
++		return ret;
+ 
+-	return ret;
++	/*
++	 * Mirror every active-set request into the SLEEP set cache.  rpmh
++	 * prunes cache entries whose sleep and wake values are equal, so this
++	 * changes nothing in the sleep/wake TCSes by itself until a suspend
++	 * vote is armed.
++	 */
++	return rpmh_write(vreg->dev, RPMH_SLEEP_STATE, cmd, 1);
+ }
+ 
+ static int _rpmh_regulator_vrm_set_voltage_sel(struct regulator_dev *rdev,
+@@ -343,6 +351,104 @@
+ 	return vreg->mode;
+ }
+ 
++
++/**
++ * rpmh_regulator_send_sleep_wake_request() - cache a SLEEP set vote together
++ *		with the matching WAKE set restore value for one register of
++ *		an RPMh regulator resource
++ */
++static int rpmh_regulator_send_sleep_wake_request(struct rpmh_vreg *vreg,
++				u32 reg_offset, u32 sleep_val, u32 wake_val)
++{
++	struct tcs_cmd cmd = {
++		.addr = vreg->addr + reg_offset,
++		.data = sleep_val,
++	};
++	int ret;
++
++	ret = rpmh_write(vreg->dev, RPMH_SLEEP_STATE, &cmd, 1);
++	if (ret < 0)
++		return ret;
++
++	cmd.data = wake_val;
++
++	return rpmh_write(vreg->dev, RPMH_WAKE_ONLY_STATE, &cmd, 1);
++}
++
++static int rpmh_regulator_set_suspend_enable(struct regulator_dev *rdev)
++{
++	struct rpmh_vreg *vreg = rdev_get_drvdata(rdev);
++
++	return rpmh_regulator_send_sleep_wake_request(vreg,
++			RPMH_REGULATOR_REG_ENABLE, 1, vreg->enabled == 1);
++}
++
++static int rpmh_regulator_set_suspend_disable(struct regulator_dev *rdev)
++{
++	struct rpmh_vreg *vreg = rdev_get_drvdata(rdev);
++
++	return rpmh_regulator_send_sleep_wake_request(vreg,
++			RPMH_REGULATOR_REG_ENABLE, 0, vreg->enabled == 1);
++}
++
++static int rpmh_regulator_vrm_active_pmic_mode(struct rpmh_vreg *vreg)
++{
++	if (vreg->bypassed)
++		return vreg->hw_data->pmic_bypass_mode;
++
++	if (vreg->mode == REGULATOR_MODE_INVALID)
++		return -EINVAL;
++
++	return vreg->hw_data->pmic_mode_map[vreg->mode];
++}
++
++static int rpmh_regulator_vrm_set_suspend_mode(struct regulator_dev *rdev,
++					unsigned int mode)
++{
++	struct rpmh_vreg *vreg = rdev_get_drvdata(rdev);
++	int sleep_mode, wake_mode;
++
++	if (mode > REGULATOR_MODE_STANDBY)
++		return -EINVAL;
++
++	sleep_mode = vreg->hw_data->pmic_mode_map[mode];
++	if (sleep_mode < 0)
++		return sleep_mode;
++
++	wake_mode = rpmh_regulator_vrm_active_pmic_mode(vreg);
++	if (wake_mode < 0)
++		wake_mode = sleep_mode;
++
++	if (vreg->bypassed)
++		sleep_mode = wake_mode;
++
++	return rpmh_regulator_send_sleep_wake_request(vreg,
++			RPMH_REGULATOR_REG_VRM_MODE, sleep_mode, wake_mode);
++}
++
++static int rpmh_regulator_resume(struct regulator_dev *rdev)
++{
++	struct rpmh_vreg *vreg = rdev_get_drvdata(rdev);
++	int mode;
++	int ret;
++
++	ret = rpmh_regulator_send_sleep_wake_request(vreg,
++			RPMH_REGULATOR_REG_ENABLE,
++			vreg->enabled == 1, vreg->enabled == 1);
++	if (ret < 0)
++		return ret;
++
++	if (vreg->hw_data->regulator_type != VRM)
++		return 0;
++
++	mode = rpmh_regulator_vrm_active_pmic_mode(vreg);
++	if (mode < 0)
++		return 0;
++
++	return rpmh_regulator_send_sleep_wake_request(vreg,
++			RPMH_REGULATOR_REG_VRM_MODE, mode, mode);
++}
++
+ /**
+  * rpmh_regulator_vrm_get_optimum_mode() - get the mode based on the  load
+  * @rdev:		Regulator device pointer for the rpmh-regulator
+@@ -401,6 +507,10 @@
+ 	.list_voltage		= regulator_list_voltage_linear_range,
+ 	.set_mode		= rpmh_regulator_vrm_set_mode,
+ 	.get_mode		= rpmh_regulator_vrm_get_mode,
++	.set_suspend_enable	= rpmh_regulator_set_suspend_enable,
++	.set_suspend_disable	= rpmh_regulator_set_suspend_disable,
++	.set_suspend_mode	= rpmh_regulator_vrm_set_suspend_mode,
++	.resume			= rpmh_regulator_resume,
+ };
+ 
+ static const struct regulator_ops rpmh_regulator_vrm_drms_ops = {
+@@ -413,6 +523,10 @@
+ 	.set_mode		= rpmh_regulator_vrm_set_mode,
+ 	.get_mode		= rpmh_regulator_vrm_get_mode,
+ 	.get_optimum_mode	= rpmh_regulator_vrm_get_optimum_mode,
++	.set_suspend_enable	= rpmh_regulator_set_suspend_enable,
++	.set_suspend_disable	= rpmh_regulator_set_suspend_disable,
++	.set_suspend_mode	= rpmh_regulator_vrm_set_suspend_mode,
++	.resume			= rpmh_regulator_resume,
+ };
+ 
+ static const struct regulator_ops rpmh_regulator_vrm_bypass_ops = {
+@@ -426,12 +540,19 @@
+ 	.get_mode		= rpmh_regulator_vrm_get_mode,
+ 	.set_bypass		= rpmh_regulator_vrm_set_bypass,
+ 	.get_bypass		= rpmh_regulator_vrm_get_bypass,
++	.set_suspend_enable	= rpmh_regulator_set_suspend_enable,
++	.set_suspend_disable	= rpmh_regulator_set_suspend_disable,
++	.set_suspend_mode	= rpmh_regulator_vrm_set_suspend_mode,
++	.resume			= rpmh_regulator_resume,
+ };
+ 
+ static const struct regulator_ops rpmh_regulator_xob_ops = {
+ 	.enable			= rpmh_regulator_enable,
+ 	.disable		= rpmh_regulator_disable,
+ 	.is_enabled		= rpmh_regulator_is_enabled,
++	.set_suspend_enable	= rpmh_regulator_set_suspend_enable,
++	.set_suspend_disable	= rpmh_regulator_set_suspend_disable,
++	.resume			= rpmh_regulator_resume,
+ };
+ 
+ /**

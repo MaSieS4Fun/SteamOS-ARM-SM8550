@@ -5,7 +5,7 @@ Wants=sm8550-boot-debug.service
 
 [Service]
 Type=oneshot
-ExecStartPre=/bin/sleep 25
+TimeoutStartSec=20
 ExecStart=/usr/lib/steamos/sm8550-boot-debug late
 RemainAfterExit=yes
 

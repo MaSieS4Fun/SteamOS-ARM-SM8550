@@ -1,0 +1,3 @@
+# USB-C dock plug. Runs as root, unlike the Plasma user session.
+# The probe itself does nothing while gamescope is running.
+ACTION=="add", SUBSYSTEM=="typec", ENV{DEVTYPE}=="typec_partner", TAG+="systemd", ENV{SYSTEMD_WANTS}="sm8550-drm-probe.service"

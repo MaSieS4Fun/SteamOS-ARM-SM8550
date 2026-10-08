@@ -1,0 +1,53 @@
+#!/bin/bash
+# SteamOS: "Switch to Desktop" is one-shot. Reboot must return to Game Mode
+# unless the user chose a persistent desktop login
+# (steamos-session-select plasma-persistent / default_login_mode=Desktop).
+#
+# sm8550-preserve-sddm-session keeps one-shot Plasma for an SDDM restart in
+# the same boot (/run + symlink). A leftover regular override on the /etc
+# overlay still has to be dropped here before SDDM starts.
+set -euo pipefail
+
+STATE="${SM8550_STEAMOS_MANAGER_STATE:-/home/steamos/.config/steamos-manager/state.toml}"
+OVERRIDE="${SM8550_SDDM_OVERRIDE:-/etc/sddm.conf.d/zzz-sm8550-session-override.conf}"
+OVERLAY_OVERRIDE="${SM8550_SDDM_OVERLAY_OVERRIDE:-/var/lib/overlays/etc/upper/sddm.conf.d/zzz-sm8550-session-override.conf}"
+ONESHOT="${SM8550_SDDM_ONESHOT:-/run/sm8550/sddm-autologin.conf}"
+RESET_FLAG="${SM8550_SDDM_RESET_FLAG:-/run/sm8550-resetting-sddm}"
+OVERRIDE_DIR="$(dirname "${OVERRIDE}")"
+OVERLAY_DIR="$(dirname "${OVERLAY_OVERRIDE}")"
+
+LOG() { logger -t sm8550-session -- "$*" 2>/dev/null || true; }
+
+login_mode_is_desktop() {
+  [[ -r "${STATE}" ]] || return 1
+  grep -qiE '^[[:space:]]*default_login_mode[[:space:]]*=[[:space:]]*"(Desktop|desktop)"' \
+    "${STATE}"
+}
+
+drop_oneshot() {
+  local f
+  : > "${RESET_FLAG}" || true
+  trap 'rm -f "${RESET_FLAG}"' RETURN
+  for f in \
+    "${OVERRIDE_DIR}/zzt-steamos-temp-login.conf" \
+    "${OVERRIDE_DIR}/zzt-holo-temp-login.conf" \
+    "${OVERLAY_DIR}/zzt-steamos-temp-login.conf" \
+    "${OVERLAY_DIR}/zzt-holo-temp-login.conf" \
+    "${OVERRIDE}" \
+    "${OVERLAY_OVERRIDE}" \
+    "${ONESHOT}"
+  do
+    [[ -e "${f}" || -L "${f}" ]] || continue
+    rm -f "${f}"
+    LOG "removed one-shot SDDM file ${f}"
+  done
+}
+
+if login_mode_is_desktop; then
+  LOG "default_login_mode=Desktop — keep persistent Plasma"
+  exit 0
+fi
+
+drop_oneshot
+LOG "reboot returns to Game Mode (default_login_mode is not Desktop)"
+exit 0

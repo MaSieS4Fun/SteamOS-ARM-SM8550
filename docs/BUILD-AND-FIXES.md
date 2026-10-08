@@ -191,6 +191,36 @@ process and the plugin can terminate the whole Plasma session.
 - AYN Thor touch changes are staged but enabled only when device tree reports
   `ayn,thor`.
 
+### Dock, freezes, and Display Configuration
+
+Game Mode keeps scanout on the internal panel. While
+`GAMESCOPE_FORCE_INTERNAL=1`, gamescope does not EDID-probe DP/HDMI.
+`drmModeGetConnector()` on a USB-C dock holds the DRM modeset lock and the
+panel stops updating until the machine is power-cycled. The kernel command
+line boots with `drm_kms_helper.poll=0` for the same reason. Game Mode also
+keeps PipeWire on the internal speakers.
+
+Desktop Mode is a PC session. Entering Plasma turns connector poll on.
+Plugging the USB-C dock runs that probe as root: the user session cannot
+write the connector, and a sudoers file not owned by root is ignored.
+The probe writes `detect` once on DP and HDMI. KWin then sees the second
+screen, and KScreen asks what to do with it the first time. Plasma does
+not invent a layout of its own. Leaving for Game
+Mode, or rebooting, turns poll off first and pins audio back to the speakers
+so an unplug does not leave PipeWire on a dead DisplayPort sink. KScreen
+replication of a disconnected output is still cleared, and external variable
+refresh stays off. PowerDevil is started with `POWERDEVIL_NO_DDCUTIL=1`.
+This path does not rewrite Steam's `config.vdf`.
+
+### Game Mode and LSFG
+
+Lossless Scaling's `~/lsfg` wrapper must not export `ENABLE_GAMESCOPE_WSI=0`.
+Without the Gamescope WSI layer, Proton does not present into gamescope, focus
+stays on Steam (appid 769), and Game Mode shows the loading spinner with Home
+and Cancel while the game process keeps running. `gamescope-session` removes
+that export and sets `enable_wsi = true` before Steam starts. Games launched
+without the wrapper, such as Castle of Illusion, already present normally.
+
 ### Logging policy
 
 Production images use journald's volatile default. QAM debug flags, persistent

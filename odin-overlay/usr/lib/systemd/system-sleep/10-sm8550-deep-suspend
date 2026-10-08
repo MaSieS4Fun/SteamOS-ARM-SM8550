@@ -1,0 +1,257 @@
+#!/bin/bash
+# SM8550 deep suspend: require S2RAM, drop USB PHY votes (armada #2),
+# rfkill BT, take wlan0 down, then unbind+remove WCN7850 PCI.
+# Do not unbind the BT UART — that delays the power key by seconds and
+# power-cycles the combo PMU on resume (scan appears, vanishes, returns).
+# One 0644 dump before sleep and one after resume.
+# Abort if the kernel did not select [deep] — s2idle wedges this SoC
+# (ROCKNIX PR #2954). No-op off SM8550.
+set -uo pipefail
+
+HOOK_TAG="sm8550-deep-suspend"
+STATE_DIR="/run/steamos-sm8550-suspend"
+RADIOS_FILE="${STATE_DIR}/radios"
+IFACES_FILE="${STATE_DIR}/ifaces"
+USBPM_FILE="${STATE_DIR}/usb-power-controls"
+PCI_FILE="${STATE_DIR}/pci-removed"
+
+LOG() { logger -t "${HOOK_TAG}" -- "$*" 2>/dev/null || true; }
+
+is_sm8550() {
+  local compat=""
+  [[ -r /proc/device-tree/compatible ]] || return 1
+  compat="$(tr '\0' ' ' </proc/device-tree/compatible 2>/dev/null || true)"
+  [[ "${compat}" == *qcom,sm8550* ]]
+}
+
+require_deep_mem_sleep() {
+  local mem=""
+  [[ -w /sys/power/mem_sleep ]] || {
+    LOG "mem_sleep not writable — continue"
+    return 0
+  }
+  echo deep >/sys/power/mem_sleep 2>/dev/null || true
+  mem="$(tr -d '\n' </sys/power/mem_sleep 2>/dev/null || true)"
+  LOG "mem_sleep=${mem}"
+  if [[ "${mem}" != *'[deep]'* ]]; then
+    LOG "abort suspend: need S2RAM [deep], got '${mem:-empty}'"
+    return 1
+  fi
+  return 0
+}
+
+install_dump() {
+  local src="$1" dest="$2"
+  mkdir -p "$(dirname "${dest}")" 2>/dev/null || true
+  cp -f "${src}" "${dest}" 2>/dev/null || return 0
+  chmod 644 "${dest}" 2>/dev/null || true
+}
+
+persist_dump() {
+  local stage="$1"
+  local tmp dest d drv tz
+  tmp="$(mktemp /tmp/sm8550-suspend.XXXXXX 2>/dev/null || echo /tmp/sm8550-suspend-last.txt)"
+  {
+    echo "===== sm8550 suspend ${stage} $(date -Iseconds 2>/dev/null || date) ====="
+    echo "mem_sleep=$(tr -d '\n' </sys/power/mem_sleep 2>/dev/null || true)"
+    echo "wlan0=$(tr -d '\n' </sys/class/net/wlan0/operstate 2>/dev/null || true)"
+    echo "----- pci -----"
+    for d in /sys/bus/pci/devices/*; do
+      [[ -e "${d}/vendor" ]] || continue
+      drv=""
+      if [[ -e "${d}/driver" ]]; then
+        drv="$(basename "$(readlink -f "${d}/driver")" 2>/dev/null || true)"
+      fi
+      echo "${d##*/} $(tr -d '\n' <"${d}/vendor" 2>/dev/null) $(tr -d '\n' <"${d}/device" 2>/dev/null) drv=${drv}"
+    done
+    echo "----- phy/usb/pcie -----"
+    for d in /sys/bus/platform/devices/88e8000.phy \
+             /sys/bus/platform/devices/*.usb \
+             /sys/bus/platform/devices/*.pcie \
+             /sys/bus/pci/devices/0000:00:00.0; do
+      [[ -e "${d}/power/runtime_status" ]] || continue
+      echo "${d##*/} control=$(tr -d '\n' <"${d}/power/control" 2>/dev/null) status=$(tr -d '\n' <"${d}/power/runtime_status" 2>/dev/null)"
+    done
+    echo "----- thermal -----"
+    for tz in /sys/class/thermal/thermal_zone*; do
+      [[ -r "${tz}/temp" ]] || continue
+      echo "$(tr -d '\n' <"${tz}/type" 2>/dev/null) $(tr -d '\n' <"${tz}/temp" 2>/dev/null)"
+    done
+    echo "----- dmesg tail -----"
+    dmesg -T 2>/dev/null | tail -n 40 || true
+  } >"${tmp}" 2>/dev/null || true
+  for dest in \
+    /home/steamos/BOOT-DEBUG-suspend-last.txt \
+    /home/.steamos/offload/var/log/sm8550-suspend-last.txt
+  do
+    install_dump "${tmp}" "${dest}"
+  done
+  case "${stage}" in
+    ready) install_dump "${tmp}" /home/steamos/BOOT-DEBUG-suspend-pre.txt ;;
+    post-resume) install_dump "${tmp}" /home/steamos/BOOT-DEBUG-suspend-post.txt ;;
+  esac
+  rm -f "${tmp}"
+}
+
+find_wcn_pci() {
+  local d vendor device drv
+  for d in /sys/bus/pci/devices/*; do
+    [[ -r "${d}/vendor" && -r "${d}/device" ]] || continue
+    vendor="$(tr -d '\n' <"${d}/vendor" 2>/dev/null || true)"
+    device="$(tr -d '\n' <"${d}/device" 2>/dev/null || true)"
+    if [[ "${vendor}" == "0x17cb" && ( "${device}" == "0x1107" || "${device}" == "0x1103" ) ]]; then
+      echo "${d##*/}"
+      return 0
+    fi
+    if [[ -e "${d}/driver" ]]; then
+      drv="$(basename "$(readlink -f "${d}/driver")" 2>/dev/null || true)"
+      if [[ "${drv}" == "ath12k_wifi7_pci" || "${drv}" == "ath12k_pci" ]]; then
+        echo "${d##*/}"
+        return 0
+      fi
+    fi
+  done
+  return 1
+}
+
+remove_wcn_pci() {
+  local bdf drv=""
+  bdf="$(find_wcn_pci)" || {
+    LOG "no WCN PCI to remove"
+    return 0
+  }
+  printf '%s\n' "${bdf}" >>"${PCI_FILE}"
+  if [[ -e "/sys/bus/pci/devices/${bdf}/driver" ]]; then
+    drv="$(basename "$(readlink -f "/sys/bus/pci/devices/${bdf}/driver")" 2>/dev/null || true)"
+  fi
+  LOG "removing ${bdf} drv=${drv}"
+  if [[ -e "/sys/bus/pci/devices/${bdf}/driver/unbind" ]]; then
+    echo "${bdf}" >"/sys/bus/pci/devices/${bdf}/driver/unbind" 2>/dev/null \
+      && LOG "unbound ${bdf}" || LOG "unbind ${bdf} failed"
+  fi
+  if [[ -e "/sys/bus/pci/devices/${bdf}/remove" ]]; then
+    echo 1 >"/sys/bus/pci/devices/${bdf}/remove" 2>/dev/null \
+      && LOG "removed ${bdf}" || LOG "remove ${bdf} failed"
+  fi
+  if [[ -d "/sys/bus/pci/devices/${bdf}" ]]; then
+    LOG "WARN ${bdf} still present after remove"
+  fi
+}
+
+rescan_wcn_pci() {
+  [[ -s "${PCI_FILE}" ]] || return 0
+  if [[ -w /sys/bus/pci/rescan ]]; then
+    echo 1 >/sys/bus/pci/rescan 2>/dev/null && LOG "pci rescan after WCN remove" || LOG "pci rescan failed"
+  fi
+  local i
+  for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+    [[ -d /sys/class/net/wlan0 ]] && break
+    sleep 1
+  done
+  LOG "wlan after rescan: $(ls /sys/class/net 2>/dev/null | tr '\n' ' ')"
+}
+
+set_power_auto() {
+  local pm prev
+  for pm in "$@"; do
+    [[ -w "${pm}" ]] || continue
+    prev="$(cat "${pm}" 2>/dev/null)" || continue
+    printf '%s\t%s\n' "${pm}" "${prev}" >>"${USBPM_FILE}"
+    echo auto >"${pm}" 2>/dev/null || true
+  done
+}
+
+do_pre() {
+  is_sm8550 || return 0
+  mkdir -p "${STATE_DIR}"
+  : >"${RADIOS_FILE}"
+  : >"${IFACES_FILE}"
+  : >"${USBPM_FILE}"
+  : >"${PCI_FILE}"
+
+  require_deep_mem_sleep || return 1
+
+  local st
+  if [[ -r /sys/class/net/wlan0/operstate ]]; then
+    st="$(tr -d '\n' </sys/class/net/wlan0/operstate 2>/dev/null || true)"
+    if [[ "${st}" == up || "${st}" == unknown ]]; then
+      echo wlan0 >>"${IFACES_FILE}"
+      ip link set wlan0 down 2>/dev/null && LOG "wlan0 down for deep suspend" || true
+    fi
+  fi
+
+  if command -v rfkill >/dev/null 2>&1 && rfkill list bluetooth >/dev/null 2>&1; then
+    if rfkill list bluetooth 2>/dev/null | grep -q 'Soft blocked: yes'; then
+      LOG "bluetooth already blocked"
+    elif rfkill block bluetooth 2>/dev/null; then
+      echo bluetooth >>"${RADIOS_FILE}"
+      LOG "blocked bluetooth for deep suspend"
+    fi
+  fi
+
+  remove_wcn_pci
+
+  set_power_auto \
+    /sys/bus/platform/devices/*.usb/power/control \
+    /sys/devices/platform/soc@0/*.usb/power/control \
+    /sys/bus/platform/devices/88e8000.phy/power/control \
+    /sys/devices/platform/soc@0/88e8000.phy/power/control \
+    /sys/bus/platform/devices/*.mmc/power/control \
+    /sys/devices/platform/soc@0/*.mmc/power/control \
+    /sys/bus/platform/devices/*.sdhci/power/control \
+    /sys/bus/platform/devices/*.pcie/power/control \
+    /sys/devices/platform/soc@0/*.pcie/power/control \
+    /sys/bus/pci/devices/0000:00:00.0/power/control
+
+  persist_dump "ready"
+}
+
+do_post() {
+  is_sm8550 || return 0
+
+  local pm prev iface kind remaining=""
+  if [[ -s "${USBPM_FILE}" ]]; then
+    while IFS=$'\t' read -r pm prev; do
+      [[ -w "${pm}" ]] && echo "${prev}" >"${pm}" 2>/dev/null || true
+    done < <(tac "${USBPM_FILE}" 2>/dev/null || cat "${USBPM_FILE}")
+    rm -f "${USBPM_FILE}"
+  fi
+
+  rescan_wcn_pci
+  rm -f "${PCI_FILE}"
+
+  if [[ -s "${IFACES_FILE}" ]]; then
+    while IFS= read -r iface; do
+      [[ -n "${iface}" ]] || continue
+      ip link set "${iface}" up 2>/dev/null && LOG "restored ${iface}" || true
+    done <"${IFACES_FILE}"
+    rm -f "${IFACES_FILE}"
+  fi
+
+  if [[ -s "${RADIOS_FILE}" ]]; then
+    while IFS= read -r kind; do
+      [[ -n "${kind}" ]] || continue
+      if command -v rfkill >/dev/null 2>&1 && rfkill unblock "${kind}" 2>/dev/null; then
+        LOG "restored ${kind}"
+      else
+        remaining+="${kind}"$'\n'
+      fi
+    done <"${RADIOS_FILE}"
+    if [[ -n "${remaining}" ]]; then
+      printf '%s' "${remaining}" >"${RADIOS_FILE}"
+    else
+      rm -f "${RADIOS_FILE}"
+    fi
+  else
+    rm -f "${RADIOS_FILE}"
+  fi
+
+  persist_dump "post-resume"
+  rmdir "${STATE_DIR}" 2>/dev/null || true
+}
+
+case "${1:-}/${2:-}" in
+  pre/suspend|pre/hibernate) do_pre || exit 1 ;;
+  post/suspend|post/hibernate) do_post ;;
+esac
+exit 0

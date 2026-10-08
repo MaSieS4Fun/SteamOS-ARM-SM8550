@@ -1,0 +1,5 @@
+#!/bin/sh
+# Frame has no kdeinit5. startplasma-wayland treats a missing helper as
+# failed (org.kde.startup exit 255) and never brings up plasma-workspace.
+echo "kdeinit5_shutdown stub pid=$$" >>"${HOME:-/home/steamos}/.local/state/sm8550-plasma-start.log" 2>/dev/null || true
+exit 0

@@ -56,12 +56,7 @@ download_meson_wheels_for_chroot() {
   log "Downloading meson + mako wheels for chroot Python ${py_ver} (aarch64)..."
   mkdir -p "${MESON_WHEEL_DIR}"
   rm -f "${MESON_WHEEL_DIR}/"*.whl
-  pip3 download -d "${MESON_WHEEL_DIR}" \
-    --python-version "${py_ver}" \
-    --platform manylinux2014_aarch64 \
-    --only-binary=:all: \
-    'meson>=1.7' mako markupsafe \
-    || pip download -d "${MESON_WHEEL_DIR}" \
+  python3 -m pip download -d "${MESON_WHEEL_DIR}" \
     --python-version "${py_ver}" \
     --platform manylinux2014_aarch64 \
     --only-binary=:all: \

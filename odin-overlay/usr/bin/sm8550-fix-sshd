@@ -1,0 +1,7 @@
+#!/bin/bash
+# Create missing OpenSSH host keys. Never fail the sshd unit: first boot
+# overlay /etc may not be writable yet, and ssh-keygen -A returning 1
+# made sshd exit 255 in a restart loop on the fbcon.
+mkdir -p /etc/ssh
+timeout -k 1 8 /usr/bin/ssh-keygen -A >/dev/null 2>&1 || true
+exit 0

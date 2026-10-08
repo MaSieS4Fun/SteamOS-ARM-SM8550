@@ -1,0 +1,204 @@
+#!/usr/bin/env bash
+# Internal-panel profile for Plasma. Does not describe the dock.
+# seed: write kwinoutputconfig.json only when it is missing or the profile
+# version changed. A later dock layout must survive the next desktop login.
+set -u
+
+PROFILE_VERSION="1"
+CONF="${SM8550_DISPLAY_CONF:-/usr/share/steamos-odin/devices/sm8550-display.conf}"
+CFG_HOME="${XDG_CONFIG_HOME:-${HOME:-/home/steamos}/.config}"
+MARKER="${CFG_HOME}/sm8550/display-profile.version"
+KWIN_JSON="${CFG_HOME}/kwinoutputconfig.json"
+
+dt_model() {
+  if [[ -n "${SM8550_DT_MODEL:-}" ]]; then
+    printf '%s' "$SM8550_DT_MODEL"
+    return 0
+  fi
+  local f="/proc/device-tree/model"
+  if [[ -r "$f" ]]; then
+    tr -d '\0' <"$f"
+    return 0
+  fi
+  printf ''
+}
+
+resolve_line() {
+  local model="$1" line match
+  [[ -r "$CONF" ]] || return 1
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ -z "$line" || "$line" == \#* ]] && continue
+    match="${line%%|*}"
+    if [[ "$model" == *"$match"* ]]; then
+      printf '%s\n' "$line"
+      return 0
+    fi
+  done <"$CONF"
+  return 1
+}
+
+parse_line() {
+  local line="$1"
+  IFS='|' read -r MATCH ID PRIMARY SECONDARY ROT KWIN W H REFRESH SCALE _ <<<"$line"
+}
+
+need_update() {
+  local current=""
+  [[ -r "$MARKER" ]] && current="$(tr -d '[:space:]' <"$MARKER")"
+  [[ "$current" != "$PROFILE_VERSION" ]]
+}
+
+write_kwin_json() {
+  local primary="$1" secondary="${2:-}" transform="$3" width="$4" height="$5" refresh="$6" scale="$7"
+  python3 - "$KWIN_JSON" "$primary" "$secondary" "$transform" "$width" "$height" "$refresh" "$scale" <<'JSONPY'
+import json, sys
+from pathlib import Path
+
+dest, primary, secondary, transform, width, height, refresh, scale = sys.argv[1:9]
+width, height, refresh = int(width), int(height), int(refresh)
+scale = float(scale)
+
+def output(name):
+    return {
+        "allowSdrSoftwareBrightness": True,
+        "autoRotation": "InTabletMode",
+        "brightness": 1,
+        "colorProfileSource": "sRGB",
+        "connectorName": name,
+        "edidIdentifier": "",
+        "highDynamicRange": False,
+        "iccProfilePath": "",
+        "mode": {"height": height, "refreshRate": refresh, "width": width},
+        "overscan": 0,
+        "rgbRange": "Automatic",
+        "scale": scale,
+        "sdrBrightness": 200,
+        "sdrGamutWideness": 0,
+        "transform": transform,
+        "vrrPolicy": "Never",
+        "wideColorGamut": False,
+    }
+
+def slot(index, priority, x):
+    return {
+        "enabled": True,
+        "outputIndex": index,
+        "position": {"x": x, "y": 0},
+        "priority": priority,
+    }
+
+logical_w = height if transform in ("Rotated90", "Rotated270") else width
+logical_w = int(round(logical_w / (scale or 1.0)))
+
+outputs = [output(primary)]
+setups = [{"lidClosed": False, "outputs": [slot(0, 0, 0)]}]
+if secondary:
+    outputs.append(output(secondary))
+    setups.append({
+        "lidClosed": False,
+        "outputs": [slot(0, 0, 0), slot(1, 1, logical_w)],
+    })
+
+doc = [
+    {"data": outputs, "name": "outputs"},
+    {"data": setups, "name": "setups"},
+]
+path = Path(dest)
+path.parent.mkdir(parents=True, exist_ok=True)
+path.write_text(json.dumps(doc, indent=4) + "\n", encoding="utf-8")
+JSONPY
+}
+
+seed() {
+  local model line
+  model="$(dt_model)"
+  line="$(resolve_line "$model" || true)"
+  [[ -n "$line" ]] || {
+    echo "sm8550-device-profile: no display profile for model='${model:-unknown}'" >&2
+    return 0
+  }
+  parse_line "$line"
+  if [[ -f "$KWIN_JSON" && "${SM8550_DISPLAY_FORCE:-0}" != 1 ]]; then
+    if ! need_update; then
+      echo "sm8550-device-profile: keep existing $KWIN_JSON ($ID version $PROFILE_VERSION)"
+      return 0
+    fi
+    # A dock layout is already here. Do not replace it with the internal seed.
+    if grep -Eq '"connectorName": "(DP-|HDMI-|DVI-)' "$KWIN_JSON"; then
+      mkdir -p "$(dirname "$MARKER")"
+      printf '%s\n' "$PROFILE_VERSION" >"$MARKER"
+      echo "sm8550-device-profile: adopted existing dock layout in $KWIN_JSON"
+      return 0
+    fi
+  fi
+  mkdir -p "$(dirname "$KWIN_JSON")" "$(dirname "$MARKER")"
+  write_kwin_json "$PRIMARY" "$SECONDARY" "$KWIN" "$W" "$H" "$REFRESH" "$SCALE"
+  printf '%s\n' "$PROFILE_VERSION" >"$MARKER"
+  echo "sm8550-device-profile: seeded $ID ($PRIMARY${SECONDARY:+ + $SECONDARY}) -> $KWIN_JSON"
+}
+
+kscreen_apply() {
+  local out="$1" rot="$2" scale="$3" i=0
+  command -v kscreen-doctor >/dev/null 2>&1 || return 0
+  while ! kscreen-doctor -o >/dev/null 2>&1; do
+    i=$((i + 1))
+    [[ "$i" -ge 20 ]] && return 0
+    sleep 0.5
+  done
+  kscreen-doctor "output.${out}.enable" "output.${out}.rotation.${rot}" "output.${out}.scale.${scale}" "output.${out}.vrrpolicy.never" >/dev/null 2>&1 || true
+}
+
+apply() {
+  local model line
+  model="$(dt_model)"
+  line="$(resolve_line "$model" || true)"
+  [[ -n "$line" ]] || {
+    echo "sm8550-device-profile: no display profile for model='${model:-unknown}'" >&2
+    return 0
+  }
+  parse_line "$line"
+  local fresh=0
+  if need_update || [[ ! -f "$KWIN_JSON" || "${SM8550_DISPLAY_FORCE:-0}" == 1 ]]; then
+    fresh=1
+  fi
+  seed
+  if [[ "$fresh" != 1 ]]; then
+    echo "sm8550-device-profile: $ID already at version $PROFILE_VERSION"
+    return 0
+  fi
+  kscreen_apply "$PRIMARY" "$ROT" "$SCALE" || true
+  if [[ -n "$SECONDARY" ]]; then
+    kscreen_apply "$SECONDARY" "$ROT" "$SCALE" || true
+  fi
+  if [[ "$ID" == "thor" && -x /usr/bin/thorch-kwin-touch-map ]]; then
+    /usr/bin/thorch-kwin-touch-map >/dev/null 2>&1 || true
+  fi
+  echo "sm8550-device-profile: applied $ID (version $PROFILE_VERSION)"
+}
+
+show() {
+  local model line
+  model="$(dt_model)"
+  printf 'model=%s\n' "${model:-unknown}"
+  if line="$(resolve_line "$model" || true)"; then
+    parse_line "$line"
+    printf 'profile=%s primary=%s secondary=%s rotation=%s scale=%s version=%s\n' \
+      "$ID" "$PRIMARY" "${SECONDARY:--}" "$ROT" "$SCALE" "$PROFILE_VERSION"
+  else
+    echo "profile=none"
+  fi
+}
+
+cmd="${1:-show}"
+case "$cmd" in
+  seed) seed ;;
+  apply) apply ;;
+  show|status) show ;;
+  -h|--help|help)
+    echo "Usage: sm8550-device-profile [show|seed|apply]"
+    ;;
+  *)
+    echo "unknown command: $cmd" >&2
+    exit 2
+    ;;
+esac

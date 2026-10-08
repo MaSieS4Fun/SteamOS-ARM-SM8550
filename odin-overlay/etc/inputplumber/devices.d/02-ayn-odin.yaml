@@ -31,6 +31,16 @@ matches:
       attributes:
         - name: model
           value: AYN Thor
+  - udev:
+      sys_path: /sys/firmware/devicetree/base
+      attributes:
+        - name: model
+          value: Retroid Pocket 6
+  - udev:
+      sys_path: /sys/firmware/devicetree/base
+      attributes:
+        - name: model
+          value: Retroid Pocket 6 TOP-DPAD
 
 single_source: false
 

@@ -22,6 +22,7 @@ NAMES = {
     "AYN Odin2 Gamepad",
     "AYN Thor Gamepad",
     "RSInput Gamepad",
+    "Retroid Pocket 6 Gamepad",
 }
 SKIP = ("Motion", "Touch", "Headset", "Keyboard", "Mouse", "mapped")
 AXES = ((0, "left X"), (1, "left Y"), (3, "right X"), (4, "right Y"))

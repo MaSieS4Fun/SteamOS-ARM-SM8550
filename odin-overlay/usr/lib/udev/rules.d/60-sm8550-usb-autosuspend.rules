@@ -1,0 +1,5 @@
+# SM8550: an active DWC3 / HS-PHY holds a USB-to-DDR interconnect vote in
+# every RPMh bucket including the sleep set (Armada #2: 88e8000.phy stays
+# runtime-active → CX cannot collapse, right-side heat only in suspend).
+ACTION=="add|bind", SUBSYSTEM=="platform", KERNEL=="*.usb", DRIVERS=="dwc3-qcom", ATTR{power/control}="auto"
+ACTION=="add|bind", SUBSYSTEM=="platform", KERNEL=="88e8000.phy", ATTR{power/control}="auto"

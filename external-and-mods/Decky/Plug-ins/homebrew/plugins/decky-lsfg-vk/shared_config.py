@@ -126,8 +126,8 @@ CONFIG_SCHEMA_DEF = {
     "enable_wsi": {
         "name": "enable_wsi",
         "fieldType": ConfigFieldType.BOOLEAN,
-        "default": False,
-        "description": "Enable Gamescope WSI Layer, disable if frame generation isn't applying or isn't feeling smooth (use with HDR off)",
+        "default": True,
+        "description": "Keep the Gamescope WSI layer on. Game Mode cannot show the game without it: the Steam spinner stays up while audio plays.",
         "location": "script"
     },
     

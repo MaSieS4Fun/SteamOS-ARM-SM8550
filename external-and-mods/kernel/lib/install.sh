@@ -287,6 +287,15 @@ install_from_build() {
         _install_wipe_dir "${INSTALL_FIRMWARE_DST}"
         echo "  ${INSTALL_FIRMWARE_DST}/ ← firmware/" >&2
         _install_cp_tree "${firmware_src}" "${INSTALL_FIRMWARE_DST}"
+        if [[ -x "${ROOT}/../../scripts/install-ath12k-wcn7850-7014.sh" ]]; then
+            "${ROOT}/../../scripts/install-ath12k-wcn7850-7014.sh" --firmware-root "${INSTALL_FIRMWARE_DST}" \
+                || echo "  WARNING: WCN7850 7.0.14 pin failed" >&2
+        elif [[ -d "${ROOT}/firmware-overrides/ath12k/WCN7850/hw2.0" ]]; then
+            rm -rf "${INSTALL_FIRMWARE_DST}/ath12k/WCN7850"
+            mkdir -p "${INSTALL_FIRMWARE_DST}/ath12k"
+            cp -a "${ROOT}/firmware-overrides/ath12k/WCN7850" "${INSTALL_FIRMWARE_DST}/ath12k/WCN7850"
+            echo "  + ath12k/WCN7850 ← 7.0.14 pin" >&2
+        fi
     else
         echo "  WARNING: no firmware/ in build — skipping firmware" >&2
     fi

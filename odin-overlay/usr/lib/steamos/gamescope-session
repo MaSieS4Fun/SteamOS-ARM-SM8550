@@ -58,6 +58,24 @@ export STEAM_ENABLE_VOLUME_HANDLER="${STEAM_ENABLE_VOLUME_HANDLER:-0}"
 export STEAM_DISABLE_AUDIO_DEVICE_SWITCHING=1
 export SRT_URLOPEN_PREFER_STEAM=1
 export ENABLE_GAMESCOPE_WSI=1
+# LSFG's ~/lsfg wrapper exports ENABLE_GAMESCOPE_WSI=0. Proton then never
+# presents into gamescope, so Game Mode stays on the Steam spinner (Home +
+# Cancel) while the game process and audio keep running. Castle of Illusion
+# is launched without that wrapper and focuses normally. Keep WSI on.
+sm8550_keep_gamescope_wsi() {
+  local home="${HOME:-/home/steamos}"
+  local script="${home}/lsfg"
+  local conf="${home}/.config/lsfg-vk/conf.toml"
+  if [[ -f "$script" ]] && grep -q 'ENABLE_GAMESCOPE_WSI=0' "$script"; then
+    # DXVK_HDR=0 is written in the same opt-out and the plugin reads it back
+    # as enable_wsi = false, which would restore the spinner on the next save.
+    sed -i '/^export ENABLE_GAMESCOPE_WSI=0$/d;/^export DXVK_HDR=0$/d' "$script"
+  fi
+  if [[ -f "$conf" ]] && grep -q '^enable_wsi = false$' "$conf"; then
+    sed -i 's/^enable_wsi = false$/enable_wsi = true/' "$conf"
+  fi
+}
+sm8550_keep_gamescope_wsi
 # Proven QAM contract: expose the nested X11 output as Valve/DSI-1 and let
 # gamescope paint Steam UI above the running game.
 export GAMESCOPE_SM8550_STEAM_INTERNAL_X11=1
@@ -69,6 +87,10 @@ export GAMESCOPE_NV12_COLORSPACE=k_EStreamColorspace_BT601
 # DRMBackend.cpp; keep it forced so a 0° probe cannot skip it.
 export GAMESCOPE_USE_ROTATION_SHADER=1
 export GAMESCOPE_FORCE_INTERNAL="${GAMESCOPE_FORCE_INTERNAL:-1}"
+# Same moment as the session switch: no connector poll, speakers only.
+mkdir -p "${HOME:-/home/steamos}/.local/state"
+touch "${HOME:-/home/steamos}/.local/state/sm8550-force-speaker"
+/usr/lib/steamos/sm8550-drm-poll off >/dev/null 2>&1 || true
 # Same physical size the working SM8550 session advertises (not connector mm).
 export GAMESCOPE_FAKE_OUTPUT_MM="${GAMESCOPE_FAKE_OUTPUT_MM:-177x100}"
 export STEAM_USE_MANGOAPP=1
@@ -122,6 +144,26 @@ if [[ -z "$OUTPUT" ]]; then
     fi
   done
   OUTPUT="${OUTPUT:-DSI-1}"
+fi
+
+_compat=""
+if [[ -f /proc/device-tree/compatible ]]; then
+  _compat="$(tr -d '\0' < /proc/device-tree/compatible 2>/dev/null || true)"
+fi
+
+# Armada ayn-thor.conf: gamescope drives DSI-2 only (top AMOLED).
+if [[ "${_compat}" == *ayn,thor* ]]; then
+  for card in /sys/class/drm/card*-DSI-2; do
+    [[ -e "$card/status" ]] || continue
+    [[ "$(cat "$card/status" 2>/dev/null || true)" == connected ]] || continue
+    OUTPUT="DSI-2"
+    mode="$(head -1 "$card/modes" 2>/dev/null || true)"
+    if [[ "$mode" =~ ^([0-9]+)x([0-9]+) ]]; then
+      PANEL_W="${BASH_REMATCH[1]}"
+      PANEL_H="${BASH_REMATCH[2]}"
+    fi
+    break
+  done
 fi
 
 if [[ "$PANEL_H" -gt "$PANEL_W" ]]; then
@@ -195,7 +237,18 @@ if [[ "${GAMESCOPE_SESSION_TARGET}" != "gamescope-session.target" ]]; then
   WATCH_SERVICE="steamvr-nested-desktop.service"
 fi
 
-echo >&2 "gamescope-session: output=$OUTPUT panel=${PANEL_W}x${PANEL_H} nested=${W}x${H}@${REFRESH_HZ}"
+# Portal / RP6 DTS use rotation=<270>; Odin 2 uses 90. Auto + 270 inverts those
+# two panels. Thor: Armada ayn-thor.conf uses orientation=right.
+ORIENT="auto"
+case "${_compat}" in
+  *ayn,thor*) ORIENT="right" ;;
+  *ayn,odin2portal*|*retroidpocket,rp6*) ORIENT="left" ;;
+esac
+if [[ "${ORIENT}" != "auto" ]]; then
+  GAMESCOPE_ARGS+=(--force-orientation "${ORIENT}")
+fi
+
+echo >&2 "gamescope-session: output=$OUTPUT panel=${PANEL_W}x${PANEL_H} nested=${W}x${H}@${REFRESH_HZ} orientation=${ORIENT}"
 
 if [[ "$QAM_DEBUG" == 1 ]]; then
   # stderr = xwm Viewport Layer / qam-diag / debug-focus (no Desktop ni journal)

@@ -1,0 +1,18 @@
+From: MaSi-OS <masies@local>
+Subject: [PATCH] mhi: drain event rings and start AMSS from SBL poll
+
+KERNEL #4 reached "Polled EE SBL, queueing AMSS download" then never
+logged BHIe or wlan. BHIe completion is MMIO, but WCN7850 on 7.2.8 also
+needs the host to process event rings (MSI still dead) and the SBL
+worker skipped AMSS when ee was already SBL.
+
+Poll-drain event rings during BHI/BHIe waits, run AMSS/BHIe inline when
+SBL is observed, then keep polling for Mission mode.
+
+Applied in-tree by scripts/apply-masi-72-overlays.py (linux-7.2.x). GNU
+patch cannot carry this: the original commit message had no diff, and
+the SBL worker must still run AMSS download (do not skip when EE is
+already SBL). Content-present skip in lib/kbuild/patches.sh:
+mhi_drain_events + "Mission mode M0, creating devices".
+
+Signed-off-by: MaSi-OS <masies@local>

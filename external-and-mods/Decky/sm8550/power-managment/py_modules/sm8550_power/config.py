@@ -7,9 +7,12 @@ from typing import Any
 
 from .defaults import FACTORY, PROFILE_IDS, SOC_CLASS
 
-STATE_DIR = "/var/lib/steamos-ubuntu"
+STATE_DIR = os.environ.get(
+    "DECKY_PLUGIN_SETTINGS_DIR",
+    os.path.join(os.path.expanduser("~"), ".config", "sm8550-power"),
+)
 CONFIG_FILE = f"{STATE_DIR}/power-config.json"
-LEGACY_PROFILE_FILE = f"{STATE_DIR}/power-profile"
+LEGACY_PROFILE_FILE = "/var/lib/steamos-ubuntu/power-profile"
 
 _LEGACY_MAP = {
     "power": "eco",

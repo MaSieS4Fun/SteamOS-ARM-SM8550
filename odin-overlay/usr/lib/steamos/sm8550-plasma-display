@@ -1,0 +1,505 @@
+#!/usr/bin/env bash
+# Keep Plasma's display configuration recoverable across dock hotplug.
+# KScreen was saving the internal panel as a replica of DP-1. After unplug
+# the Display Configuration KCM has no current mode and Apply cannot undo it.
+# This does not rewrite Steam's config.vdf.
+set -u
+
+CONF="${SM8550_DISPLAY_CONF:-/usr/share/steamos-odin/devices/sm8550-display.conf}"
+CFG_HOME="${XDG_CONFIG_HOME:-${HOME:-/home/steamos}/.config}"
+DATA_HOME="${XDG_DATA_HOME:-${HOME:-/home/steamos}/.local/share}"
+KWIN_JSON="${CFG_HOME}/kwinoutputconfig.json"
+CONTROL_DIR="${DATA_HOME}/kscreen/control/configs"
+DRM_CLASS="${SM8550_DRM_CLASS:-/sys/class/drm}"
+SETTLE_SEC="${SM8550_DISPLAY_SETTLE_SEC:-2}"
+
+log() { echo "sm8550-plasma-display: $*" | logger -t sm8550-display || echo "sm8550-plasma-display: $*"; }
+
+dt_model() {
+  if [[ -n "${SM8550_DT_MODEL:-}" ]]; then
+    printf '%s' "$SM8550_DT_MODEL"
+    return 0
+  fi
+  local f="/proc/device-tree/model"
+  if [[ -r "$f" ]]; then
+    tr -d '\0' <"$f"
+    return 0
+  fi
+  printf ''
+}
+
+connected_list() {
+  local path name status
+  for path in "$DRM_CLASS"/card*-*/status; do
+    [[ -r "$path" ]] || continue
+    name="${path#${DRM_CLASS}/}"
+    name="${name%%/*}"
+    name="${name#*-}"
+    case "$name" in
+      Writeback-*|Virtual-*|VGA-*) continue ;;
+    esac
+    status="$(tr -d '[:space:]' <"$path" 2>/dev/null || true)"
+    [[ "$status" == connected ]] || continue
+    printf '%s\n' "$name"
+  done | sort -u
+}
+
+signature() {
+  connected_list | tr '\n' ' '
+}
+
+repair() {
+  local model connected
+  model="$(dt_model)"
+  connected="$(connected_list | tr '\n' ' ')"
+  local out="" rc=0
+  out="$(python3 - "$KWIN_JSON" "$CONTROL_DIR" "$CONF" "$model" "$connected" <<'PY'
+import json, sys
+from pathlib import Path
+
+kwin_path, control_dir, conf_path, model, connected_raw = sys.argv[1:6]
+connected = [n for n in connected_raw.split() if n]
+changed = False
+
+def is_internal(name: str) -> bool:
+    return name.startswith(("DSI-", "eDP-", "LVDS-", "DPI-"))
+
+def is_external(name: str) -> bool:
+    return name.startswith(("DP-", "HDMI-", "HDMI-A-", "DVI-"))
+
+def load_profile():
+    fallback = {
+        "primary": "DSI-1",
+        "secondary": "",
+        "transform": "Rotated270",
+        "width": 1080,
+        "height": 1920,
+        "refresh": 60000,
+        "scale": 1.5,
+    }
+    path = Path(conf_path)
+    if not path.is_file():
+        return fallback
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split("|")
+        if len(parts) < 10:
+            continue
+        if parts[0] and parts[0] in model:
+            return {
+                "primary": parts[2],
+                "secondary": parts[3],
+                "transform": parts[5],
+                "width": int(parts[6]),
+                "height": int(parts[7]),
+                "refresh": int(parts[8]),
+                "scale": float(parts[9]),
+            }
+    return fallback
+
+def logical_size(mode, transform, scale):
+    w = int(mode.get("width") or 0)
+    h = int(mode.get("height") or 0)
+    if transform in ("Rotated90", "Rotated270"):
+        w, h = h, w
+    scale = float(scale or 1) or 1.0
+    return max(1, int(round(w / scale))), max(1, int(round(h / scale)))
+
+def mode_ok(mode):
+    return isinstance(mode, dict) and int(mode.get("width") or 0) > 0 and int(mode.get("height") or 0) > 0
+
+def blank_output(name, mode, transform, scale):
+    return {
+        "allowSdrSoftwareBrightness": True,
+        "autoRotation": "InTabletMode",
+        "brightness": 1,
+        "colorProfileSource": "sRGB",
+        "connectorName": name,
+        "edidIdentifier": "",
+        "highDynamicRange": False,
+        "iccProfilePath": "",
+        "mode": mode,
+        "overscan": 0,
+        "rgbRange": "Automatic",
+        "scale": scale,
+        "sdrBrightness": 200,
+        "sdrGamutWideness": 0,
+        "transform": transform,
+        "vrrPolicy": "Never",
+        "wideColorGamut": False,
+    }
+
+# Drop KScreen's "replicate this output" records. They outlive the dock and
+# make the Display Configuration page bind against a missing mode.
+control_changed = False
+control = Path(control_dir)
+if control.is_dir():
+    for cfg in control.glob("*"):
+        if not cfg.is_file():
+            continue
+        try:
+            doc = json.loads(cfg.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        dirty = False
+        for output in doc.get("outputs") or []:
+            for key in ("replicate-hash", "replicate-name", "replicate-source"):
+                if key in output:
+                    output.pop(key, None)
+                    dirty = True
+        if dirty:
+            cfg.write_text(json.dumps(doc, indent=4) + "\n", encoding="utf-8")
+            control_changed = True
+            print(f"cleared replication in {cfg.name}")
+
+if not connected:
+    print("no connected connectors; left kwin config untouched")
+    sys.exit(0 if control_changed else 10)
+
+# KWin owns the layout. Writing one here skips KScreen's first-connect
+# question and can pin a mode the monitor does not advertise.
+print("connectors: " + " ".join(connected))
+print("leaving the new screen to KScreen")
+sys.exit(0 if control_changed else 10)
+
+profile = load_profile()
+path = Path(kwin_path)
+if path.is_file():
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        doc = None
+else:
+    doc = None
+
+if not isinstance(doc, list):
+    doc = [{"data": [], "name": "outputs"}, {"data": [], "name": "setups"}]
+    changed = True
+
+outputs = next((b.get("data") for b in doc if b.get("name") == "outputs"), None)
+setups = next((b.get("data") for b in doc if b.get("name") == "setups"), None)
+if not isinstance(outputs, list):
+    outputs = []
+    changed = True
+if not isinstance(setups, list):
+    setups = []
+    changed = True
+
+by_name = {}
+for entry in outputs:
+    if isinstance(entry, dict) and entry.get("connectorName"):
+        by_name[entry["connectorName"]] = entry
+
+def ensure_output(name):
+    global changed
+    entry = by_name.get(name)
+    if is_internal(name) and name in (profile["primary"], profile["secondary"]):
+        mode = {"width": profile["width"], "height": profile["height"], "refreshRate": profile["refresh"]}
+        transform = profile["transform"]
+        scale = profile["scale"]
+    else:
+        mode = {"width": 1920, "height": 1080, "refreshRate": 60000}
+        transform = "Normal"
+        scale = 1.0
+    if entry is None:
+        if is_external(name):
+            return None
+        entry = blank_output(name, mode, transform, scale)
+        outputs.append(entry)
+        by_name[name] = entry
+        changed = True
+        return entry
+    if is_external(name):
+        # Keep the mode KWin read from EDID. A guessed 1920x1080@60 is not in
+        # the mode list, and Display Configuration then has nothing to Apply.
+        return entry
+    if not mode_ok(entry.get("mode")):
+        entry["mode"] = mode
+        entry["transform"] = transform
+        entry["scale"] = scale
+        changed = True
+    return entry
+
+missing_external = []
+for name in connected:
+    if is_internal(name):
+        ensure_output(name)
+    elif is_external(name):
+        entry = by_name.get(name)
+        if entry is None or not mode_ok(entry.get("mode")):
+            missing_external.append(name)
+
+if missing_external:
+    print("waiting " + " ".join(missing_external))
+    if changed:
+        for block in doc:
+            if block.get("name") == "outputs":
+                block["data"] = outputs
+            elif block.get("name") == "setups":
+                block["data"] = setups
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(doc, indent=4) + "\n", encoding="utf-8")
+    sys.exit(11)
+
+def setup_names(setup):
+    names = []
+    for slot in setup.get("outputs") or []:
+        idx = slot.get("outputIndex")
+        if not isinstance(idx, int) or idx < 0 or idx >= len(outputs):
+            return None
+        name = outputs[idx].get("connectorName")
+        if not name:
+            return None
+        names.append(name)
+    return names
+
+def setup_valid(setup, names):
+    if names is None:
+        return False
+    if set(names) != set(connected):
+        return False
+    positions = []
+    internals_on = []
+    for slot in setup.get("outputs") or []:
+        entry = outputs[slot["outputIndex"]]
+        name = entry["connectorName"]
+        if not mode_ok(entry.get("mode")):
+            return False
+        if is_internal(name):
+            internals_on.append(bool(slot.get("enabled", True)))
+        if slot.get("enabled", True):
+            pos = slot.get("position") or {}
+            positions.append((int(pos.get("x") or 0), int(pos.get("y") or 0)))
+    if internals_on and not any(internals_on):
+        return False
+    if len(positions) >= 2 and len(set(positions)) == 1:
+        return False
+    return True
+
+match = None
+for setup in setups:
+    if isinstance(setup, dict) and setup_valid(setup, setup_names(setup)):
+        match = setup
+        break
+
+if match is None and connected:
+    # External monitor is the desk display: put it first so it is primary
+    # at x=0. The handheld panel stays on, to the right.
+    ordered = [n for n in connected if is_external(n)] + [n for n in connected if is_internal(n)]
+    slots = []
+    x = 0
+    for priority, name in enumerate(ordered):
+        entry = ensure_output(name)
+        if entry is None:
+            continue
+        idx = outputs.index(entry)
+        if is_internal(name) and name in (profile["primary"], profile["secondary"]) and not mode_ok(entry.get("mode")):
+            entry["transform"] = profile["transform"]
+            entry["scale"] = profile["scale"]
+            entry["mode"] = {
+                "width": profile["width"],
+                "height": profile["height"],
+                "refreshRate": profile["refresh"],
+            }
+            entry["vrrPolicy"] = "Never"
+        if is_external(name) and not entry.get("vrrPolicy"):
+            entry["vrrPolicy"] = "Never"
+        lw, _lh = logical_size(entry["mode"], entry.get("transform") or "Normal", entry.get("scale") or 1)
+        slots.append({
+            "enabled": True,
+            "outputIndex": idx,
+            "position": {"x": x, "y": 0},
+            "priority": priority,
+        })
+        x += lw
+    fresh = {"lidClosed": False, "outputs": slots}
+    replaced = False
+    for i, setup in enumerate(setups):
+        names = setup_names(setup) if isinstance(setup, dict) else None
+        if names is not None and set(names) == set(connected):
+            setups[i] = fresh
+            replaced = True
+            break
+    if not replaced:
+        setups.append(fresh)
+    changed = True
+    print("rebuilt setup for " + " ".join(ordered))
+
+for block in doc:
+    if block.get("name") == "outputs":
+        block["data"] = outputs
+    elif block.get("name") == "setups":
+        block["data"] = setups
+
+if changed:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(doc, indent=4) + "\n", encoding="utf-8")
+    print("updated " + str(path))
+elif not control_changed:
+    print("display config already consistent")
+sys.exit(0 if changed or control_changed else 10)
+PY
+)"
+  local rc=$?
+  [[ -n "$out" ]] && printf '%s\n' "$out"
+  if [[ "$rc" == 0 ]]; then
+    apply_live || true
+  elif [[ "$rc" == 11 ]]; then
+    local -a waiting=()
+    local line
+    while IFS= read -r line; do
+      [[ "$line" == waiting\ * ]] || continue
+      read -r -a waiting <<<"${line#waiting }"
+    done <<<"$out"
+    if (( ${NUDGE_LEFT:-0} > 0 )); then
+      NUDGE_LEFT=$((NUDGE_LEFT - 1))
+      nudge_outputs "${waiting[@]}"
+    fi
+  elif [[ "$rc" != 10 ]]; then
+    log "repair failed rc=$rc"
+    return 1
+  fi
+  return 0
+}
+
+nudge_outputs() {
+  local name
+  [[ "${SM8550_DISPLAY_SKIP_LIVE:-0}" == 1 ]] && return 0
+  (( $# )) || return 0
+  command -v kscreen-doctor >/dev/null 2>&1 || return 0
+  for name in "$@"; do
+    [[ -n "$name" ]] || continue
+    log "enable ${name} with the mode KWin read from the monitor"
+    timeout 5 kscreen-doctor "output.${name}.enable" >/dev/null 2>&1 \
+      || log "kscreen has not seen ${name} yet"
+  done
+}
+
+apply_live() {
+  [[ "${SM8550_DISPLAY_SKIP_LIVE:-0}" == 1 ]] && return 0
+  command -v kscreen-doctor >/dev/null 2>&1 || return 0
+  [[ -n "${WAYLAND_DISPLAY:-}${DISPLAY:-}" || -S "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/wayland-0" ]] || return 0
+  if systemctl --user try-restart plasma-kscreen.service >/dev/null 2>&1; then
+    sleep 0.4
+  fi
+  local args=()
+  mapfile -t args < <(python3 - "$KWIN_JSON" "$(connected_list | tr '\n' ' ')" <<'PY'
+import json, sys
+from pathlib import Path
+doc = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+connected = set(sys.argv[2].split())
+outputs = next(b["data"] for b in doc if b.get("name") == "outputs")
+setups = next(b["data"] for b in doc if b.get("name") == "setups")
+
+def names(setup):
+    out = []
+    for slot in setup.get("outputs") or []:
+        out.append(outputs[slot["outputIndex"]]["connectorName"])
+    return out
+
+match = None
+for setup in setups:
+    got = names(setup)
+    if set(got) == connected:
+        match = setup
+        break
+if match is None:
+    sys.exit(0)
+
+rot = {
+    "Normal": "normal",
+    "Rotated90": "left",
+    "Rotated180": "inverted",
+    "Rotated270": "right",
+}
+for slot in match.get("outputs") or []:
+    if not slot.get("enabled", True):
+        continue
+    entry = outputs[slot["outputIndex"]]
+    name = entry["connectorName"]
+    mode = entry.get("mode") or {}
+    hz = int(round(int(mode.get("refreshRate") or 60000) / 1000)) or 60
+    scale = entry.get("scale") or 1
+    pos = slot.get("position") or {}
+    priority = int(slot.get("priority") or 0) + 1
+    transform = rot.get(entry.get("transform") or "Normal", "normal")
+    vrr = (entry.get("vrrPolicy") or "Never").lower()
+    if vrr not in ("never", "always", "automatic"):
+        vrr = "never"
+    print(f"output.{name}.enable")
+    print(f"output.{name}.mode.{int(mode['width'])}x{int(mode['height'])}@{hz}")
+    print(f"output.{name}.rotation.{transform}")
+    print(f"output.{name}.scale.{scale}")
+    print(f"output.{name}.position.{int(pos.get('x') or 0)},{int(pos.get('y') or 0)}")
+    print(f"output.{name}.priority.{priority}")
+    print(f"output.{name}.vrrpolicy.{vrr}")
+PY
+)
+  [[ "${#args[@]}" -gt 0 ]] || return 0
+  if timeout 8 kscreen-doctor "${args[@]}" >/dev/null 2>&1; then
+    log "applied ${#args[@]} kscreen settings"
+  else
+    log "kscreen-doctor did not apply; config is saved for the next login"
+  fi
+}
+
+probe_docks() {
+  [[ -f "${HOME:-/home/steamos}/.local/state/sm8550-force-speaker" ]] && return 0
+  /usr/lib/steamos/sm8550-drm-poll probe >/dev/null 2>&1 || true
+}
+
+attach_signature() {
+  local n=0 p
+  shopt -s nullglob
+  for p in /sys/class/typec/port*-partner /sys/class/typec/*/partner; do
+    [[ -e "$p" ]] && n=$((n + 1))
+  done
+  shopt -u nullglob
+  printf 'typec=%s drm=%s' "$n" "$(signature)"
+}
+
+watch() {
+  local prev="" cur="" tick=0
+  log "watching $DRM_CLASS"
+  NUDGE_LEFT=8
+  probe_docks
+  sleep 1
+  repair || true
+  prev="$(attach_signature)"
+  while true; do
+    sleep 1
+    tick=$((tick + 1))
+    cur="$(attach_signature)"
+    if [[ "$cur" != "$prev" ]]; then
+      sleep "$SETTLE_SEC"
+      cur="$(attach_signature)"
+      prev="$cur"
+      NUDGE_LEFT=8
+      log "dock: ${cur}"
+      probe_docks
+      sleep 1
+      repair || true
+      continue
+    fi
+    # KWin may record the EDID a moment after detect. Retry until the
+    # second output is in the layout the Display Configuration page edits.
+    if (( tick % 3 == 0 )); then
+      repair || true
+    fi
+  done
+}
+
+cmd="${1:-repair}"
+case "$cmd" in
+  repair) repair ;;
+  watch) watch ;;
+  -h|--help|help)
+    echo "Usage: sm8550-plasma-display [repair|watch]"
+    ;;
+  *)
+    echo "unknown command: $cmd" >&2
+    exit 2
+    ;;
+esac

@@ -1,0 +1,75 @@
+From: MaSi <noreply@masi.local>
+Subject: [PATCH] input: rsinput: quiesce MCU and drop VDD across system sleep
+
+Armada 1005/1007 on top of MaSi 1032 stick centering.
+
+---
+--- a/drivers/input/joystick/rsinput.c	2026-09-29 15:43:48.694389807 +0200
++++ b/drivers/input/joystick/rsinput.c	2026-09-29 15:43:48.694448192 +0200
+@@ -55,6 +55,7 @@
+     struct serdev_device *serdev;
+     struct input_dev *input;
+ 	struct regulator *vdd;
++    bool vdd_off;
+     struct gpio_desc *boot_gpio;
+     struct gpio_desc *enable_gpio;
+     struct gpio_desc *reset_gpio;
+@@ -581,7 +582,8 @@
+     if (drv->reset_gpio)
+         gpiod_set_value_cansleep(drv->reset_gpio, 0);
+ 
+-    regulator_disable(drv->vdd);
++    if (!drv->vdd_off)
++        regulator_disable(drv->vdd);
+ }
+ 
+ 
+@@ -601,9 +603,32 @@
+ static int rsinput_suspend(struct device *dev)
+ {
+ 	struct rsinput_driver *drv = dev_get_drvdata(dev);
++	int error;
+ 
+ 	rsinput_rumble_cancel(NULL);
+ 	rsinput_report_sticks_centered(drv);
++
++	/*
++	 * Stop continuous MCU reports before the UART suspends; otherwise the
++	 * UART IRQ can be disabled as spurious. rsinput_resume() powers the
++	 * MCU back on through rsinput_init_commands().
++	 */
++	if (drv->enable_gpio)
++		gpiod_set_value_cansleep(drv->enable_gpio, 0);
++
++	if (drv->reset_gpio)
++		gpiod_set_value_cansleep(drv->reset_gpio, 0);
++
++	if (!drv->vdd_off) {
++		error = regulator_disable(drv->vdd);
++		if (error) {
++			dev_err(dev, "Failed to disable MCU supply: %d\n", error);
++			rsinput_init_commands(drv);
++			return error;
++		}
++		drv->vdd_off = true;
++	}
++
+ 	return 0;
+ }
+ 
+@@ -615,6 +640,15 @@
+ 	if (!drv)
+ 		return 0;
+ 
++	if (drv->vdd_off) {
++		error = regulator_enable(drv->vdd);
++		if (error) {
++			dev_err(dev, "Failed to enable MCU supply: %d\n", error);
++			return error;
++		}
++		drv->vdd_off = false;
++	}
++
+ 	/* MCU often needs a beat after rails return before UART commands stick. */
+ 	msleep(80);
+ 	error = rsinput_init_commands(drv);

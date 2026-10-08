@@ -4,7 +4,7 @@
 # ROCKNIX always gets root=PARTLABEL=STORAGE so UFS boot does not depend on the SD.
 set -euo pipefail
 
-UFS_INTERNAL_CMDLINE='clk_ignore_unused pd_ignore_unused quiet rw rootwait root=PARTLABEL=STORAGE rootfstype=ext4 errors=remount-ro mem_sleep_default=deep ufshcd_core.uic_cmd_timeout=3000'
+UFS_INTERNAL_CMDLINE='clk_ignore_unused pd_ignore_unused quiet rw rootwait root=PARTLABEL=STORAGE rootfstype=ext4 errors=remount-ro pcie_aspm=off drm_kms_helper.poll=0 mem_sleep_default=deep ufshcd_core.uic_cmd_timeout=3000'
 
 have_android_mkbootimg() {
     command -v unpack_bootimg >/dev/null 2>&1 && command -v mkbootimg >/dev/null 2>&1
@@ -209,7 +209,7 @@ ufs_fstab_text() {
 # SteamOS SM8550 — internal UFS (ROCKNIX ABL 3-partition)
 PARTLABEL=STORAGE  /      ext4  defaults,noatime,commit=120,errors=remount-ro  0 1
 PARTLABEL=ROCKNIX  /boot  vfat  defaults,umask=0077                           0 2
-PARTLABEL=HOME     /home  ext4  defaults,noatime,x-systemd.growfs             0 2
+PARTLABEL=HOME     /home  ext4  defaults,noatime                             0 0
 tmpfs              /tmp   tmpfs defaults,nosuid                               0 0
 EOF
 }

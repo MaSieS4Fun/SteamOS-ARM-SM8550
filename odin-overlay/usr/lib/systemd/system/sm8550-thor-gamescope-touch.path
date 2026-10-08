@@ -1,0 +1,12 @@
+[Unit]
+Description=Watch Game Mode socket for AYN Thor touch routing
+ConditionPathExists=/proc/device-tree/compatible
+After=systemd-udevd.service
+
+[Path]
+PathExists=/run/user/1000/gamescope-0
+MakeDirectory=no
+
+[Install]
+WantedBy=multi-user.target
+# Enabled only by odin3-thor-autoinstall on ayn,thor — not on the shared image.

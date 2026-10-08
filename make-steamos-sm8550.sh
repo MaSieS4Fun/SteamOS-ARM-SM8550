@@ -13,7 +13,13 @@ SCRIPTS="${ROOT}/scripts"
 R="${ROOT}/rootfs"
 MOD="${ROOT}/external-and-mods"
 OVL="${ROOT}/odin-overlay"
-KOUT="${MOD}/kernel/output/7.0.14-edge-sm8550"
+# shellcheck source=scripts/lib/sm8550-kernel-out.sh
+source "${SCRIPTS}/lib/sm8550-kernel-out.sh"
+KOUT="$(sm8550_resolve_kout "${MOD}" || true)"
+if [[ -n "${KOUT}" ]]; then
+  KREL="$(sm8550_kernel_release "${KOUT}" || true)"
+  sm8550_link_current_kout "${MOD}" "${KOUT}" || true
+fi
 IMG="${STEAMOS_SM8550_IMG:-${ROOT}/steamos-sm8550.img}"
 MNT="${ROOT}/.image-mnt"
 LOOPDEV=""
@@ -61,8 +67,9 @@ Usage: $0 [options]
   --image-only      Only pack the .img from the current rootfs
   --img PATH        Output image (default: ${IMG})
 
-Env: BOOT_MIB ROOT_MIB HOME_MIB STEAMOS_SM8550_IMG
+Env: BOOT_MIB ROOT_MIB HOME_MIB STEAMOS_SM8550_IMG KERNEL_OUT
      SKIP_GAMESCOPE_BUILD=1 SKIP_MANGOHUD_BUILD=1  (same as --skip-build)
+     SM8550_DEBUG_BOOT=1  persist journal + BOOT-DEBUG + gamescope-qam.log
      empty ROOT_MIB/HOME_MIB = auto (tight pack; home grows on first boot)
 EOF
 }
@@ -163,7 +170,10 @@ apply_mods() {
   fi
   log "Applying kernel / gamescope / MangoHud / Mesa / OOBE / Plasma / Decky / apps"
   log "(includes install-oobe-update-fix + install-plasma-desktop-switch + ensure-steam-home)"
-  sudo_run "${SCRIPTS}/apply-odin-mods.sh"
+  sudo_run env \
+    KERNEL_OUT="${KERNEL_OUT:-}" \
+    SM8550_DEBUG_BOOT="${SM8550_DEBUG_BOOT:-0}" \
+    "${SCRIPTS}/apply-odin-mods.sh"
 }
 
 prepare_runtime() {
@@ -173,17 +183,23 @@ prepare_runtime() {
   install -D -m0644 "${OVL}/usr/lib/systemd/system/steamos-sm8550-expand-home.service" \
     "${R}/usr/lib/systemd/system/steamos-sm8550-expand-home.service"
   mkdir -p "${R}/etc/systemd/system/multi-user.target.wants" \
-    "${R}/etc/systemd/system/local-fs.target.wants" \
-    "${R}/usr/lib/systemd/system/multi-user.target.wants" \
-    "${R}/usr/lib/systemd/system/local-fs.target.wants"
+    "${R}/etc/systemd/system/local-fs-pre.target.wants" \
+    "${R}/usr/lib/systemd/system/local-fs-pre.target.wants" \
+    "${R}/usr/lib/systemd/system/systemd-fsck@.service.d" \
+    "${R}/usr/lib/systemd/system/systemd-growfs@.service.d"
+  # Only local-fs-pre: WantedBy=local-fs/multi-user raced systemd-fsck (~90s fbcon).
+  rm -f "${R}/etc/systemd/system/multi-user.target.wants/steamos-sm8550-expand-home.service" \
+        "${R}/etc/systemd/system/local-fs.target.wants/steamos-sm8550-expand-home.service" \
+        "${R}/usr/lib/systemd/system/multi-user.target.wants/steamos-sm8550-expand-home.service" \
+        "${R}/usr/lib/systemd/system/local-fs.target.wants/steamos-sm8550-expand-home.service"
   ln -sfn /usr/lib/systemd/system/steamos-sm8550-expand-home.service \
-    "${R}/etc/systemd/system/multi-user.target.wants/steamos-sm8550-expand-home.service"
+    "${R}/etc/systemd/system/local-fs-pre.target.wants/steamos-sm8550-expand-home.service"
   ln -sfn /usr/lib/systemd/system/steamos-sm8550-expand-home.service \
-    "${R}/etc/systemd/system/local-fs.target.wants/steamos-sm8550-expand-home.service"
-  ln -sfn /usr/lib/systemd/system/steamos-sm8550-expand-home.service \
-    "${R}/usr/lib/systemd/system/multi-user.target.wants/steamos-sm8550-expand-home.service"
-  ln -sfn /usr/lib/systemd/system/steamos-sm8550-expand-home.service \
-    "${R}/usr/lib/systemd/system/local-fs.target.wants/steamos-sm8550-expand-home.service"
+    "${R}/usr/lib/systemd/system/local-fs-pre.target.wants/steamos-sm8550-expand-home.service"
+  install -D -m0644 "${OVL}/usr/lib/systemd/system/systemd-fsck@.service.d/sm8550-after-expand-home.conf" \
+    "${R}/usr/lib/systemd/system/systemd-fsck@.service.d/sm8550-after-expand-home.conf"
+  install -D -m0644 "${OVL}/usr/lib/systemd/system/systemd-growfs@.service.d/sm8550-after-expand-home.conf" \
+    "${R}/usr/lib/systemd/system/systemd-growfs@.service.d/sm8550-after-expand-home.conf"
   if [[ -x /usr/bin/growpart ]]; then
     install -D -m0755 /usr/bin/growpart "${R}/usr/bin/growpart"
   fi
@@ -205,10 +221,6 @@ prepare_runtime() {
     "${R}/home/steamos/LEEME-ODIN.txt"
   install -D -m0644 "${OVL}/home-steamos/README-ODIN.txt" \
     "${R}/home/steamos/README-ODIN.txt"
-  # Production images use journald's volatile default. scripts/sd-debug-boot.sh
-  # can explicitly enable persistent logs for diagnostics.
-  rm -f "${R}/etc/systemd/journald.conf.d/99-sm8550-persist.conf"
-  rm -rf "${R}/var/log/journal"
   mkdir -p "${R}/etc/systemd/system/graphical.target.wants"
   rm -f "${R}/usr/lib/steamos/sm8550-hide-console" \
         "${R}/usr/lib/systemd/system/sm8550-hide-console.service" \
@@ -218,9 +230,20 @@ prepare_runtime() {
         "${R}/etc/systemd/system/multi-user.target.wants/sm8550-hide-console.service" \
         "${R}/usr/lib/systemd/system/graphical.target.wants/sm8550-hide-console.service" \
         "${R}/usr/lib/systemd/system/sysinit.target.wants/sm8550-hide-console.service" \
-        "${R}/usr/lib/systemd/system/multi-user.target.wants/sm8550-hide-console.service" \
-        "${R}/etc/systemd/system/multi-user.target.wants/sm8550-boot-debug.service" \
-        "${R}/etc/systemd/system/graphical.target.wants/sm8550-boot-debug-late.service"
+        "${R}/usr/lib/systemd/system/multi-user.target.wants/sm8550-hide-console.service"
+  if [[ "${SM8550_DEBUG_BOOT:-0}" == "1" ]]; then
+    log "Keeping debug boot logs (SM8550_DEBUG_BOOT=1)"
+    bash "${SCRIPTS}/enable-sm8550-debug-boot.sh" "${R}" "${R}/home/steamos"
+  else
+    rm -f "${R}/etc/systemd/journald.conf.d/99-sm8550-persist.conf"
+    rm -rf "${R}/var/log/journal"
+    rm -f "${R}/etc/systemd/system/multi-user.target.wants/sm8550-boot-debug.service" \
+          "${R}/etc/systemd/system/graphical.target.wants/sm8550-boot-debug-late.service" \
+          "${R}/var/lib/overlays/etc/upper/systemd/system/multi-user.target.wants/sm8550-boot-debug.service" \
+          "${R}/var/lib/overlays/etc/upper/systemd/system/graphical.target.wants/sm8550-boot-debug-late.service" \
+          "${R}/etc/sm8550-qam-debug" \
+          "${R}/var/lib/overlays/etc/upper/sm8550-qam-debug"
+  fi
   "${SCRIPTS}/install-inputplumber-sm8550.sh" "${R}"
 
   # pkexec/sudo lose setuid when the rootfs is copied as a normal user.
@@ -251,6 +274,11 @@ repack_kernel_uuid() {
   local cmdline
   # shellcheck source=external-and-mods/kernel/lib/cmdline.sh
   source "${MOD}/kernel/lib/cmdline.sh"
+  export SUSPEND_DEEP="${SUSPEND_DEEP:-1}"
+  if [[ "${SM8550_DEBUG_BOOT:-0}" == "1" ]]; then
+    export CMDLINE_QUIET=0
+    export DEBUG_BOOTLOG=1
+  fi
   cmdline="$(build_unified_abl_cmdline "${uuid}")"
   # Patch ANDROID! cmdline in place so the DTB chain / padding stays intact.
   python3 - "${src}" "${dest}" "${cmdline}" <<'PY'
@@ -439,7 +467,7 @@ EOF
 # SteamOS SM8550 — PC/handheld layout (not Steam Deck A/B)
 UUID=${root_uuid}  /      ext4  defaults,noatime                         0 1
 LABEL=BOOT         /boot  vfat  defaults,umask=0077,nofail               0 2
-UUID=${home_uuid}  /home  ext4  defaults,noatime,x-systemd.growfs        0 2
+LABEL=home         /home  ext4  defaults,noatime                         0 0
 EOF
   sudo_run mkdir -p "${MNT}/root/var/lib/overlays/etc/upper"
   sudo_run cp -a "${MNT}/root/etc/fstab" "${MNT}/root/var/lib/overlays/etc/upper/fstab"

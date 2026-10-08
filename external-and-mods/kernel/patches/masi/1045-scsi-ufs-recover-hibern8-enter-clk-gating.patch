@@ -1,0 +1,131 @@
+From: gh123man <gh123man@users.noreply.github.com>
+Subject: [PATCH] scsi: ufs: recover clock-gating hibern8-enter failures inline
+
+xiaodoudou/ROCKNIX 1009. ufshcd_gate_work() only restored CLKS_ON when
+DME_HIBER_ENTER timed out and left the link broken. During system PM that
+hangs filesystem sync after the panel is already blank.
+
+Recover the link inline, pin runtime clock gating off after the first
+failure, and snapshot gating/PM state on the failure path.
+
+Signed-off-by: gh123man <gh123man@users.noreply.github.com>
+---
+ drivers/ufs/core/ufshcd.c | 80 +++++++++++++++++++++++++++++++++++++--
+ 1 file changed, 77 insertions(+), 3 deletions(-)
+
+diff --git a/drivers/ufs/core/ufshcd.c b/drivers/ufs/core/ufshcd.c
+--- a/drivers/ufs/core/ufshcd.c
++++ b/drivers/ufs/core/ufshcd.c
+@@ -2075,6 +2075,9 @@ static void ufshcd_gate_work(struct work_struct *work)
+ {
+ 	struct ufs_hba *hba = container_of(work, struct ufs_hba,
+ 			clk_gating.gate_work.work);
++	enum clk_gating_state admitted_state;
++	int admitted_active_reqs;
++	bool admitted_pm;
+ 	int ret;
+ 
+ 	scoped_guard(spinlock_irqsave, &hba->clk_gating.lock) {
+@@ -2094,6 +2097,15 @@ static void ufshcd_gate_work(struct work_struct *work)
+ 
+ 		if (hba->clk_gating.active_reqs)
+ 			return;
++
++		/*
++		 * Preserve the state that admitted this worker.  A suspend request
++		 * can race after this lock is dropped and change the gating state
++		 * before the Hibern8 command is sent.
++		 */
++		admitted_state = hba->clk_gating.state;
++		admitted_active_reqs = hba->clk_gating.active_reqs;
++		admitted_pm = READ_ONCE(hba->pm_op_in_progress);
+ 	}
+ 
+ 	scoped_guard(spinlock_irqsave, hba->host->host_lock) {
+@@ -2104,16 +2116,82 @@ static void ufshcd_gate_work(struct work_struct *work)
+ 
+ 	/* put the link into hibern8 mode before turning off clocks */
+ 	if (ufshcd_can_hibern8_during_gating(hba)) {
++		enum clk_gating_state h8_start_state;
++		int h8_start_active_reqs;
++		bool h8_start_pm;
++
++		/* Snapshot any state transition since the worker was admitted. */
++		scoped_guard(spinlock_irqsave, &hba->clk_gating.lock) {
++			h8_start_state = hba->clk_gating.state;
++			h8_start_active_reqs = hba->clk_gating.active_reqs;
++		}
++		h8_start_pm = READ_ONCE(hba->pm_op_in_progress);
++
++		/*
++		 * Suppress the generic fatal UIC error path while this worker owns
++		 * recovery.  System PM already does this through pm_op_in_progress,
++		 * but an ordinary idle-gating failure needs the same exclusion.
++		 */
++		hba->clk_gating.is_suspended = true;
+ 		ret = ufshcd_uic_hibern8_enter(hba);
+ 		if (ret) {
+-			hba->clk_gating.state = CLKS_ON;
+-			dev_err(hba->dev, "%s: hibern8 enter failed %d\n",
++			enum clk_gating_state failed_state;
++			int failed_active_reqs;
++			bool failed_enabled;
++			bool failed_suspended;
++
++			scoped_guard(spinlock_irqsave, &hba->clk_gating.lock) {
++				failed_state = hba->clk_gating.state;
++				failed_active_reqs = hba->clk_gating.active_reqs;
++				failed_enabled = hba->clk_gating.is_enabled;
++				failed_suspended = hba->clk_gating.is_suspended;
++				hba->clk_gating.state = CLKS_ON;
++			}
++			dev_err(hba->dev,
++				"%s: hibern8 enter failed %d, recovering link\n",
+ 					__func__, ret);
++			dev_err(hba->dev,
++				"%s: gate race snapshot: admitted state=%d active=%d pm=%d; h8-start state=%d active=%d pm=%d; failed state=%d active=%d enabled=%d suspended=%d pm=%d outstanding=%#lx gate-work=%u ungate-work=%u\n",
++				__func__, admitted_state, admitted_active_reqs,
++				admitted_pm,
++				h8_start_state, h8_start_active_reqs,
++				h8_start_pm,
++				failed_state, failed_active_reqs,
++				failed_enabled, failed_suspended,
++				READ_ONCE(hba->pm_op_in_progress),
++				READ_ONCE(hba->outstanding_reqs),
++				work_busy(&hba->clk_gating.gate_work.work),
++				work_busy(&hba->clk_gating.ungate_work));
+ 			trace_ufshcd_clk_gating(hba,
+ 						hba->clk_gating.state);
++
++			ret = ufshcd_link_recovery(hba);
++
++			/*
++			 * Do not retry a destructive idle-Hibern8 transition this boot.
++			 * Pinning active_reqs is how clkgate_enable=0 keeps normal
++			 * hold/release pairs balanced while clock gating is disabled.
++			 */
++			scoped_guard(spinlock_irqsave, &hba->clk_gating.lock) {
++				if (hba->clk_gating.is_enabled) {
++					hba->clk_gating.active_reqs++;
++					hba->clk_gating.is_enabled = false;
++				}
++			}
++			hba->clk_gating.is_suspended = false;
++
++			if (ret)
++				dev_err(hba->dev,
++					"%s: link recovery after hibern8 enter failed %d\n",
++					__func__, ret);
++			else
++				dev_warn(hba->dev,
++					 "%s: link recovered; runtime clock gating disabled\n",
++					 __func__);
+ 			return;
+ 		}
+ 		ufshcd_set_link_hibern8(hba);
++		hba->clk_gating.is_suspended = false;
+ 	}
+ 
+ 	ufshcd_disable_irq(hba);
+--
+2.50.0

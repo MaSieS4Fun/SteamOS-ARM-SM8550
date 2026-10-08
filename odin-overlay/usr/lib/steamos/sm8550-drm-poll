@@ -1,0 +1,71 @@
+#!/bin/bash
+# Connector poll is off at boot so Game Mode never EDID-probes a USB-C dock.
+# Plasma turns it on: without the poll thread this SoC often never marks DP/HDMI
+# connected, so a dock keyboard works and the external monitor stays dark.
+# Game Mode and shutdown turn it off again. detect() holds the modeset lock.
+set -u
+
+mode="${1:-off}"
+log() { echo "sm8550-drm-poll: $*" | logger -t sm8550-drm || echo "sm8550-drm-poll: $*"; }
+
+if [[ "$(id -u)" -ne 0 ]]; then
+  case "$mode" in
+    on) unit=sm8550-drm-poll-on.service ;;
+    off) unit=sm8550-drm-poll-off.service ;;
+    probe) unit=sm8550-drm-probe.service ;;
+    *)
+      echo "usage: sm8550-drm-poll on|off|probe" >&2
+      exit 2
+      ;;
+  esac
+  # Root via systemd. sudoers copied with cp -a is not owned by root, and
+  # sudo then ignores it, so the dock probe never ran.
+  if systemctl --system start "$unit"; then
+    exit 0
+  fi
+  exec sudo -n -- "$0" "$mode"
+fi
+
+param=/sys/module/drm_kms_helper/parameters/poll
+
+case "$mode" in
+  on) value=1 ;;
+  off) value=0 ;;
+  probe)
+    # Game Mode must not EDID-probe the dock. Plasma and the typec udev
+    # hook are the only callers that should get past this.
+    if pgrep -x gamescope >/dev/null 2>&1; then
+      log "probe skipped, gamescope is running"
+      exit 0
+    fi
+    # Alt mode needs a moment after the USB-C partner appears. Then one
+    # detect on each external connector that is not already up. KWin hears
+    # the hotplug and KScreen asks what to do with the new screen.
+    sleep 1
+    printf '1\n' >"$param" 2>/dev/null || true
+    shopt -s nullglob
+    for status in /sys/class/drm/card*-DP-*/status \
+      /sys/class/drm/card*-HDMI-A-*/status \
+      /sys/class/drm/card*-DVI-*/status; do
+      current="$(tr -d '[:space:]' <"$status" 2>/dev/null || true)"
+      if [[ "$current" == connected ]]; then
+        log "$(basename "$(dirname "$status")") already connected"
+        continue
+      fi
+      err="$(timeout 4 sh -c "printf '%s\n' detect > '$status'" 2>&1)" || true
+      after="$(tr -d '[:space:]' <"$status" 2>/dev/null || true)"
+      log "$(basename "$(dirname "$status")") ${current:-unknown} -> ${after:-unknown} ${err}"
+    done
+    exit 0
+    ;;
+  *)
+    echo "usage: sm8550-drm-poll on|off|probe" >&2
+    exit 2
+    ;;
+esac
+
+# A stuck detect() makes this write wait. Do not let that wedge session switch
+# or reboot; the caller already continues either way.
+[[ -e "$param" ]] || exit 0
+timeout 2 sh -c "printf '%s\n' '$value' > '$param'" || true
+exit 0

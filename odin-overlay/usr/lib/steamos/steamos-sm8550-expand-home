@@ -1,18 +1,28 @@
 #!/bin/bash
 # Grow the home partition (p3 / LABEL=home) to fill the SD/UFS, then resize ext4.
-# SteamOS PC-style: root stays fixed, home expands on first boot. No reboot.
-# Do not stamp on failure — retry next boot.
+# Runs *before* home.mount so growpart is not fighting a mounted filesystem.
+# TMPDIR is /run: growpart's mktemp under /tmp races with tmp.mount and then
+# hangs systemd for TimeoutStartSec (90s every boot, no stamp).
+# Do not stamp on a real failure — retry next boot. DO stamp if already max.
 set -u
 
 STAMP_DIR=/var/lib/steamos-sm8550
 STAMP="${STAMP_DIR}/home-expanded"
 LOG=/var/log/steamos-sm8550-expand-home.log
+TMPDIR="${TMPDIR:-/run/steamos-sm8550-expand-home}"
+mkdir -p "$STAMP_DIR" /var/log "$TMPDIR"
+export TMPDIR
 
-mkdir -p "$STAMP_DIR" /var/log
 exec >>"$LOG" 2>&1
 
 ts() { date -Iseconds; }
 log() { printf '%s %s\n' "$(ts)" "$*"; }
+
+stamp_ok() {
+  mkdir -p "$STAMP_DIR"
+  touch "$STAMP"
+  log "wrote ${STAMP}"
+}
 
 log "=== expand-home start ==="
 
@@ -27,12 +37,11 @@ if ! command -v resize2fs >/dev/null 2>&1; then
 fi
 
 resolve_home() {
-  local src disk
+  local src disk uuid cand
   src="$(findmnt -no SOURCE /home 2>/dev/null || true)"
   if [[ -n "$src" && -e "$src" ]]; then
     src="$(readlink -f "$src")"
   fi
-  # /home on the same device as / is not the dedicated home partition.
   disk="$(findmnt -no SOURCE / 2>/dev/null || true)"
   if [[ -n "$src" && -b "$src" && "$src" != "$disk" ]]; then
     printf '%s\n' "$src"
@@ -47,20 +56,27 @@ resolve_home() {
       return 0
     fi
   done
+  uuid="$(awk '$2 == "/home" && $1 ~ /^UUID=/ {
+    u = $1; sub(/^UUID=/, "", u); print u; exit
+  }' /etc/fstab 2>/dev/null || true)"
+  if [[ -n "${uuid}" && -b "/dev/disk/by-uuid/${uuid}" ]]; then
+    readlink -f "/dev/disk/by-uuid/${uuid}"
+    return 0
+  fi
   return 1
 }
 
 HOME_SRC="$(resolve_home || true)"
 if [[ -z "${HOME_SRC}" || ! -b "${HOME_SRC}" ]]; then
-  log "home partition not found yet (LABEL=home / dedicated /home) — retry next boot"
+  log "home partition not found yet (LABEL=home / UUID / dedicated /home) — retry next boot"
   exit 0
 fi
 
 case "${HOME_SRC}" in
   /dev/mapper/*|/dev/dm-*|/dev/loop*)
     log "home is mapper/loop (${HOME_SRC}) — skip"
-    mkdir -p "$STAMP_DIR"
-    touch "$STAMP"
+    stamp_ok
+    log "=== expand-home done ==="
     exit 0
     ;;
 esac
@@ -68,8 +84,8 @@ esac
 FSTYPE="$(blkid -o value -s TYPE "${HOME_SRC}" 2>/dev/null || true)"
 if [[ "${FSTYPE}" != ext4 && "${FSTYPE}" != ext3 && "${FSTYPE}" != ext2 ]]; then
   log "home fstype=${FSTYPE:-unknown} — only ext* supported, skip"
-  mkdir -p "$STAMP_DIR"
-  touch "$STAMP"
+  stamp_ok
+  log "=== expand-home done ==="
   exit 0
 fi
 
@@ -92,47 +108,82 @@ if [[ ! -b "${DISK}" ]]; then
   exit 0
 fi
 
-log "home SOURCE=${HOME_SRC} disk=${DISK} part=${PART_NUM}"
+MOUNTED=0
+if findmnt -no SOURCE "${HOME_SRC}" >/dev/null 2>&1 || findmnt -no TARGET /home >/dev/null 2>&1; then
+  if [[ "$(findmnt -no SOURCE /home 2>/dev/null || true)" == "${HOME_SRC}" ]]; then
+    MOUNTED=1
+  fi
+fi
 
-if command -v growpart >/dev/null 2>&1; then
+PART_START="$(cat "/sys/class/block/${PART_BASE}/start" 2>/dev/null || echo 0)"
+PART_SIZE="$(cat "/sys/class/block/${PART_BASE}/size" 2>/dev/null || echo 0)"
+DISK_SIZE="$(blockdev --getsz "${DISK}" 2>/dev/null || echo 0)"
+PART_END=$((PART_START + PART_SIZE))
+GAP=$((DISK_SIZE - PART_END))
+ALREADY_MAX=0
+# GPT backup is ~33 sectors; allow 1 MiB slack so we do not call growpart.
+if [[ "${DISK_SIZE}" -gt 0 && "${GAP}" -le 2048 ]]; then
+  ALREADY_MAX=1
+fi
+
+log "home SOURCE=${HOME_SRC} disk=${DISK} part=${PART_NUM} mounted=${MOUNTED} gap=${GAP} already_max=${ALREADY_MAX}"
+
+if [[ "${ALREADY_MAX}" -eq 1 ]]; then
+  log "partition already at max — skip growpart"
+elif command -v growpart >/dev/null 2>&1; then
   log "growpart ${DISK} ${PART_NUM}"
   set +e
-  GROW_OUT="$(growpart "${DISK}" "${PART_NUM}" 2>&1)"
+  GROW_OUT="$(timeout -k 2 12 growpart "${DISK}" "${PART_NUM}" 2>&1)"
   GROW_RC=$?
   set -e
   printf '%s\n' "${GROW_OUT}"
   if [[ "${GROW_RC}" -eq 0 ]]; then
     log "partition grew"
+  elif [[ "${GROW_RC}" -eq 124 || "${GROW_RC}" -eq 137 ]]; then
+    log "WARN: growpart timed out rc=${GROW_RC}"
   elif [[ "${GROW_RC}" -eq 1 ]] || printf '%s\n' "${GROW_OUT}" | grep -qi 'NOCHANGE'; then
     log "partition already at max (or NOCHANGE)"
+    ALREADY_MAX=1
   else
     log "WARN: growpart rc=${GROW_RC} — still attempting resize2fs"
   fi
 else
   log "growpart missing — sfdisk fallback"
-  echo ", +" | sfdisk --no-reread -N "${PART_NUM}" "${DISK}" || true
+  timeout -k 2 8 sh -c "echo ', +' | sfdisk --no-reread -N '${PART_NUM}' '${DISK}'" || true
 fi
 
-udevadm settle 2>/dev/null || true
-partx -u "${DISK}" 2>/dev/null || true
-sleep 0.2
+udevadm settle --timeout=5 2>/dev/null || true
+timeout -k 1 5 partx -u "${DISK}" 2>/dev/null || true
+
+if [[ "${MOUNTED}" -eq 0 ]]; then
+  log "e2fsck -f -p ${HOME_SRC}"
+  set +e
+  timeout -k 2 15 e2fsck -f -p "${HOME_SRC}"
+  FSCK_RC=$?
+  set -e
+  log "e2fsck rc=${FSCK_RC}"
+fi
 
 log "resize2fs ${HOME_SRC}"
 set +e
-RESIZE_OUT="$(resize2fs "${HOME_SRC}" 2>&1)"
+RESIZE_OUT="$(timeout -k 2 20 resize2fs "${HOME_SRC}" 2>&1)"
 RESIZE_RC=$?
 set -e
 printf '%s\n' "${RESIZE_OUT}"
-if [[ "${RESIZE_RC}" -ne 0 ]]; then
-  if ! printf '%s\n' "${RESIZE_OUT}" | grep -qiE 'Nothing to do|already|is already'; then
-    log "WARN: resize2fs rc=${RESIZE_RC} — will retry next boot"
-    log "=== expand-home incomplete ==="
-    exit 0
-  fi
+if [[ "${RESIZE_RC}" -eq 0 ]] \
+    || printf '%s\n' "${RESIZE_OUT}" | grep -qiE 'Nothing to do|already|is already'; then
+  stamp_ok
+  log "=== expand-home done ==="
+  exit 0
 fi
 
-mkdir -p "$STAMP_DIR"
-touch "$STAMP"
-log "wrote ${STAMP}"
-log "=== expand-home done (no reboot) ==="
+if [[ "${ALREADY_MAX}" -eq 1 ]]; then
+  log "WARN: resize2fs rc=${RESIZE_RC} but partition already at max — stamp to unblock boot"
+  stamp_ok
+  log "=== expand-home done ==="
+  exit 0
+fi
+
+log "WARN: resize2fs rc=${RESIZE_RC} — will retry next boot"
+log "=== expand-home incomplete ==="
 exit 0

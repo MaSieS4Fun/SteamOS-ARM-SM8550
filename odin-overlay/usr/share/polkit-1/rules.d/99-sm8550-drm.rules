@@ -1,0 +1,20 @@
+// Plasma's user session may turn connector poll on and probe the dock
+// HDMI/DP output. No password dialog: the agent is not part of hotplug.
+polkit.addRule(function(action, subject) {
+    if (subject.user !== "steamos") {
+        return polkit.Result.NOT_HANDLED;
+    }
+    if (action.id !== "org.freedesktop.systemd1.manage-units") {
+        return polkit.Result.NOT_HANDLED;
+    }
+    var unit = action.lookup("unit");
+    var verb = action.lookup("verb");
+    if (verb !== "start") {
+        return polkit.Result.NOT_HANDLED;
+    }
+    if (unit === "sm8550-drm-probe.service" ||
+        unit === "sm8550-drm-poll-on.service" ||
+        unit === "sm8550-drm-poll-off.service") {
+        return polkit.Result.YES;
+    }
+});

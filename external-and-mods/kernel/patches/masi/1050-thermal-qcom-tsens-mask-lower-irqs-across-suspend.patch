@@ -1,0 +1,48 @@
+From: MaSi <noreply@masi.local>
+Subject: [PATCH] thermal: qcom: tsens: mask lower threshold IRQs across suspend
+
+Armada 0204. Falling temps storm LOWER while zones are frozen.
+
+---
+--- a/drivers/thermal/qcom/tsens.c	2026-09-29 15:43:48.690001108 +0200
++++ b/drivers/thermal/qcom/tsens.c	2026-09-29 15:43:48.690077201 +0200
+@@ -1127,6 +1127,27 @@
+ 	return priv->ops->get_temp(s, temp);
+ }
+ 
++
++static int __maybe_unused tsens_prepare(struct device *dev)
++{
++	struct tsens_priv *priv = dev_get_drvdata(dev);
++	unsigned int i;
++
++	if (tsens_version(priv) < VER_0_1)
++		return 0;
++
++	/*
++	 * Thermal zones are already suspended here. Falling temperatures
++	 * cross lower trips and the level IRQ cannot be cleared, aborting
++	 * suspend. Mask LOWER; UPPER stays armed. The first post-resume
++	 * tsens_set_trips() re-enables it.
++	 */
++	for (i = 0; i < priv->num_sensors; i++)
++		tsens_set_interrupt(priv, priv->sensor[i].hw_id, LOWER, false);
++
++	return 0;
++}
++
+ static int  __maybe_unused tsens_suspend(struct device *dev)
+ {
+ 	int ret = 0;
+@@ -1155,7 +1176,10 @@
+ 	return tsens_resume_common(priv);
+ }
+ 
+-static SIMPLE_DEV_PM_OPS(tsens_pm_ops, tsens_suspend, tsens_resume);
++static const struct dev_pm_ops tsens_pm_ops = {
++	.prepare = pm_sleep_ptr(tsens_prepare),
++	SET_SYSTEM_SLEEP_PM_OPS(tsens_suspend, tsens_resume)
++};
+ 
+ static const struct of_device_id tsens_table[] = {
+ 	{

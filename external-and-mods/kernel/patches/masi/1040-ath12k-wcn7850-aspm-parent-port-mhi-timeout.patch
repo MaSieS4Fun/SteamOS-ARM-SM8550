@@ -1,0 +1,56 @@
+From: MaSi-OS <masies@local>
+Subject: [PATCH] ath12k: WCN7850 clear parent-port ASPM + longer MHI timeout
+
+1039 keeps ASPM off on the WCN7850 endpoint after firmware boot, but
+ath12k_pci_aspm_disable() only touched the endpoint. On SM8550 the
+QCOM root port can still enter L1, MHI stays at "Power on setup success",
+and no wlan appears — same with linux-firmware or Armbian board-2.
+
+Clear L0s/L1 on pci_upstream_bridge() as well. Raise WCN7850 MHI
+timeout from 2s to 20s so AMSS can finish over that link.
+
+Signed-off-by: MaSi-OS <masies@local>
+
+diff -u -N -r a/drivers/net/wireless/ath/ath12k/pci.c b/drivers/net/wireless/ath/ath12k/pci.c
+--- a/drivers/net/wireless/ath/ath12k/pci.c
++++ b/drivers/net/wireless/ath/ath12k/pci.c
+@@ -888,7 +888,8 @@
+ static void ath12k_pci_aspm_disable(struct ath12k_pci *ab_pci)
+ {
+ 	struct ath12k_base *ab = ab_pci->ab;
++	struct pci_dev *bridge;
+ 
+ 	pcie_capability_read_word(ab_pci->pdev, PCI_EXP_LNKCTL,
+ 				  &ab_pci->link_ctl);
+@@ -901,8 +902,23 @@
+ 	pcie_capability_clear_word(ab_pci->pdev, PCI_EXP_LNKCTL,
+ 				   PCI_EXP_LNKCTL_ASPMC);
+ 
++	/* Endpoint-only ASPM off is not enough on SM8550: the QCOM root
++	 * port can still enter L1 and WCN7850 hangs after
++	 * "mhi Power on setup success" (no wlan).
++	 */
++	bridge = pci_upstream_bridge(ab_pci->pdev);
++	if (bridge) {
++		pcie_capability_clear_word(bridge, PCI_EXP_LNKCTL,
++					   PCI_EXP_LNKCTL_ASPMC);
++		ath12k_info(ab, "PCI ASPM L0s/L1 cleared on %s and bridge %s\n",
++			    pci_name(ab_pci->pdev), pci_name(bridge));
++	}
++
+ 	set_bit(ATH12K_PCI_ASPM_RESTORE, &ab_pci->flags);
+ }
+ 
+ static void ath12k_pci_update_qrtr_node_id(struct ath12k_base *ab)
+diff -u -N -r a/drivers/net/wireless/ath/ath12k/wifi7/mhi.c b/drivers/net/wireless/ath/ath12k/wifi7/mhi.c
+--- a/drivers/net/wireless/ath/ath12k/wifi7/mhi.c
++++ b/drivers/net/wireless/ath/ath12k/wifi7/mhi.c
+@@ -124,7 +124,7 @@
+ 
+ const struct mhi_controller_config ath12k_wifi7_mhi_config_wcn7850 = {
+ 	.max_channels = 128,
+-	.timeout_ms = 2000,
++	.timeout_ms = 20000,
+ 	.use_bounce_buf = false,
+ 	.buf_len = 8192,
+ 	.num_channels = ARRAY_SIZE(ath12k_wifi7_mhi_channels_wcn7850),

@@ -8,7 +8,10 @@ ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 R="${ROOT}/rootfs"
 MOD="${ROOT}/external-and-mods"
 OVL="${ROOT}/odin-overlay"
-KOUT="${MOD}/kernel/output/7.0.14-edge-sm8550"
+# shellcheck source=lib/sm8550-kernel-out.sh
+source "${SCRIPT_DIR}/lib/sm8550-kernel-out.sh"
+KOUT="$(sm8550_resolve_kout "${MOD}" || true)"
+KREL="$(sm8550_kernel_release "${KOUT}" 2>/dev/null || true)"
 STOCK="${R}/opt/stock-steamos"
 GSBUILD="${MOD}/gamescope/build"
 MESA_TURNIP="${MOD}/mesa-sm8550/turnip-working/libvulkan_freedreno.so"
@@ -45,7 +48,13 @@ fi
 [[ -x "$GSBUILD/src/gamescope" ]] || die "missing built gamescope at $GSBUILD/src/gamescope"
 
 [[ -d "$R/usr/bin" ]] || die "missing rootfs at $R"
-[[ -f "$KOUT/boot/KERNEL" ]] || die "missing kernel $KOUT"
+if [[ "${SKIP_SM8550_KERNEL:-0}" != "1" ]]; then
+  [[ -n "${KOUT}" && -f "$KOUT/boot/KERNEL" ]] \
+    || die "missing kernel pack (set KERNEL_OUT or put boot/KERNEL under ${MOD}/kernel/output)"
+  [[ -n "${KREL}" && -d "$KOUT/modules/$KREL" ]] \
+    || die "missing kernel modules in $KOUT/modules/"
+  sm8550_link_current_kout "${MOD}" "${KOUT}" || true
+fi
 [[ -f "$MESA_TURNIP" ]] || die "missing Mesa turnip $MESA_TURNIP"
 [[ -f "$MESA_OGL" ]] || die "missing Mesa opengl $MESA_OGL"
 
@@ -66,22 +75,29 @@ install_file() {
 }
 
 # ---------------------------------------------------------------------------
-# Kernel
+# Kernel (SM8550 ABL). SM8750 preview skips this and uses apply-odin3-kernel.sh.
 # ---------------------------------------------------------------------------
-log "== kernel 7.0.14-edge-sm8550"
+if [[ "${SKIP_SM8550_KERNEL:-0}" == "1" ]]; then
+  log "== skip SM8550 ABL kernel (SKIP_SM8550_KERNEL=1; ODIN3 7.1.4 comes later)"
+else
+log "== kernel ${KREL} (${KOUT})"
 mkdir -p "$R/boot" "$R/usr/lib/modules" "$R/usr/lib/firmware" "$R/opt/masi-kernel"
 if [[ -e "$R/boot/KERNEL" && ! -e "$STOCK/boot/KERNEL" ]]; then
   mkdir -p "$STOCK/boot"
   cp -a "$R/boot/KERNEL" "$STOCK/boot/KERNEL" 2>/dev/null || true
 fi
 cp -a "$KOUT/boot/KERNEL" "$R/boot/KERNEL"
-cp -a "$KOUT/boot/KERNEL.md5" "$R/boot/KERNEL.md5"
-chmod 0644 "$R/boot/KERNEL" "$R/boot/KERNEL.md5"
+if [[ -f "$KOUT/boot/KERNEL.md5" ]]; then
+  cp -a "$KOUT/boot/KERNEL.md5" "$R/boot/KERNEL.md5"
+fi
+chmod 0644 "$R/boot/KERNEL"
+[[ -f "$R/boot/KERNEL.md5" ]] && chmod 0644 "$R/boot/KERNEL.md5"
 
-rm -rf "$R/usr/lib/modules/7.0.14-edge-sm8550"
-cp -a "$KOUT/modules/7.0.14-edge-sm8550" "$R/usr/lib/modules/7.0.14-edge-sm8550"
-# Merge firmware without wiping Frame blobs.
+rm -rf "$R/usr/lib/modules/7.0.14-edge-sm8550" "$R/usr/lib/modules/${KREL}"
+cp -a "$KOUT/modules/$KREL" "$R/usr/lib/modules/$KREL"
+# Merge firmware without wiping Frame blobs, then pin live 7.0.14/Armbian WCN7850.
 cp -a "$KOUT/firmware/." "$R/usr/lib/firmware/"
+"${SCRIPT_DIR}/install-ath12k-wcn7850-7014.sh" "$R"
 
 # Kernel updater (UUID-repack on the real device)
 rm -rf "$R/opt/masi-kernel"
@@ -90,8 +106,10 @@ for item in update.sh make.sh gui.sh apt-install.sh config lib scripts packaging
   [[ -e "${MOD}/kernel/${item}" ]] && cp -a "${MOD}/kernel/${item}" "$R/opt/masi-kernel/"
 done
 mkdir -p "$R/opt/masi-kernel/output"
-cp -a "$KOUT" "$R/opt/masi-kernel/output/7.0.14-edge-sm8550"
+cp -a "$KOUT" "$R/opt/masi-kernel/output/${KREL}"
+ln -sfn "${KREL}" "$R/opt/masi-kernel/output/current"
 chmod 0755 "$R/opt/masi-kernel/update.sh" "$R/opt/masi-kernel/"*.sh 2>/dev/null || true
+fi
 
 # ---------------------------------------------------------------------------
 # gamescope
@@ -111,6 +129,11 @@ for b in gamescope gamescopectl gamescopereaper gamescopestream; do
   if [[ "$b" == "gamescope" && -n "${HOST_GAMESCOPE:-}" && -x "$HOST_GAMESCOPE" ]]; then
     src="$HOST_GAMESCOPE"
     log "gamescope: ALLOW_HOST_GAMESCOPE override $HOST_GAMESCOPE"
+  fi
+  if [[ ! -e "$src" ]]; then
+    [[ "$b" == "gamescope" ]] && die "missing $src"
+    log "skip $b (not in this gamescope build)"
+    continue
   fi
   install_file "$src" "$R/usr/bin/$b" 0755
   mkdir -p "$R/usr/local/bin"
@@ -226,6 +249,15 @@ install_file "$OVL/usr/lib/steamos/sm8550-prepare-plasma" \
   "$R/usr/lib/steamos/sm8550-prepare-plasma" 0755
 install_file "$OVL/usr/lib/steamos/sm8550-startplasma" \
   "$R/usr/lib/steamos/sm8550-startplasma" 0755
+install_file "$OVL/usr/lib/steamos/sm8550-plasma-session" \
+  "$R/usr/lib/steamos/sm8550-plasma-session" 0755
+mkdir -p "$R/usr/lib/steamos/plasma-stubs"
+install_file "$OVL/usr/lib/steamos/plasma-stubs/kdeinit5_shutdown" \
+  "$R/usr/lib/steamos/plasma-stubs/kdeinit5_shutdown" 0755
+install_file "$OVL/usr/lib/steamos/plasma-stubs/qdbus" \
+  "$R/usr/lib/steamos/plasma-stubs/qdbus" 0755
+install_file "$OVL/usr/lib/steamos/plasma-stubs/kdeinit5_shutdown" \
+  "$R/usr/bin/kdeinit5_shutdown" 0755
 backup "$R/usr/bin/steamos-session-select" "$STOCK/usr/bin/steamos-session-select"
 install_file "$OVL/usr/bin/steamos-session-select" \
   "$R/usr/bin/steamos-session-select" 0755
@@ -273,6 +305,46 @@ install_file "$OVL/usr/lib/steamos/sm8550-disable-external-x11" \
   "$R/usr/lib/steamos/sm8550-disable-external-x11" 0755
 install_file "$OVL/usr/lib/steamos/sm8550-dock-hotplug" \
   "$R/usr/lib/steamos/sm8550-dock-hotplug" 0755
+install_file "$OVL/usr/lib/steamos/sm8550-device-profile" \
+  "$R/usr/lib/steamos/sm8550-device-profile" 0755
+install_file "$OVL/usr/lib/steamos/sm8550-plasma-display" \
+  "$R/usr/lib/steamos/sm8550-plasma-display" 0755
+install_file "$OVL/usr/share/steamos-odin/devices/sm8550-display.conf" \
+  "$R/usr/share/steamos-odin/devices/sm8550-display.conf" 0644
+install_file "$OVL/usr/lib/systemd/user/sm8550-plasma-display.service" \
+  "$R/usr/lib/systemd/user/sm8550-plasma-display.service" 0644
+install_file "$OVL/usr/lib/systemd/user/plasma-powerdevil.service.d/99-sm8550-no-ddcutil.conf" \
+  "$R/usr/lib/systemd/user/plasma-powerdevil.service.d/99-sm8550-no-ddcutil.conf" 0644
+install_file "$OVL/etc/modprobe.d/sm8550-drm-poll.conf" \
+  "$R/etc/modprobe.d/sm8550-drm-poll.conf" 0644
+install_file "$OVL/usr/lib/steamos/sm8550-drm-poll" \
+  "$R/usr/lib/steamos/sm8550-drm-poll" 0755
+install_file "$OVL/etc/sudoers.d/sm8550-drm-poll" \
+  "$R/etc/sudoers.d/sm8550-drm-poll" 0440
+chown root:root "$R/etc/sudoers.d/sm8550-drm-poll"
+install_file "$OVL/usr/lib/systemd/system/sm8550-drm-probe.service" \
+  "$R/usr/lib/systemd/system/sm8550-drm-probe.service" 0644
+install_file "$OVL/usr/lib/systemd/system/sm8550-drm-poll-on.service" \
+  "$R/usr/lib/systemd/system/sm8550-drm-poll-on.service" 0644
+install_file "$OVL/usr/lib/systemd/system/sm8550-drm-poll-off.service" \
+  "$R/usr/lib/systemd/system/sm8550-drm-poll-off.service" 0644
+install_file "$OVL/usr/lib/udev/rules.d/99-sm8550-dock-display.rules" \
+  "$R/usr/lib/udev/rules.d/99-sm8550-dock-display.rules" 0644
+install_file "$OVL/usr/share/polkit-1/rules.d/99-sm8550-drm.rules" \
+  "$R/usr/share/polkit-1/rules.d/99-sm8550-drm.rules" 0644
+install_file "$OVL/etc/xdg/kded6rc" "$R/etc/xdg/kded6rc" 0644
+install_file "$OVL/etc/xdg/kscreenrc" "$R/etc/xdg/kscreenrc" 0644
+install_file "$OVL/usr/lib/systemd/system-shutdown/sm8550-drm-poll" \
+  "$R/usr/lib/systemd/system-shutdown/sm8550-drm-poll" 0755
+for _t in halt reboot shutdown; do
+  mkdir -p "$R/etc/systemd/system/${_t}.target.wants"
+  ln -sfn /usr/lib/systemd/system/sm8550-drm-poll-off.service \
+    "$R/etc/systemd/system/${_t}.target.wants/sm8550-drm-poll-off.service"
+done
+if [[ -d "$R/var/lib/overlays/etc/upper" ]]; then
+  install_file "$OVL/etc/modprobe.d/sm8550-drm-poll.conf" \
+    "$R/var/lib/overlays/etc/upper/modprobe.d/sm8550-drm-poll.conf" 0644
+fi
 install_file "$OVL/usr/lib/steamos/sm8550-oobe-restart-steam" \
   "$R/usr/lib/steamos/sm8550-oobe-restart-steam" 0755
 install_file "$OVL/usr/lib/steamos/sm8550-relaunch-steam" \
@@ -325,12 +397,31 @@ for u in steamvr.service steamvr-logs.service steamvr-proxmicmute.service \
 done
 for u in steamvr-program-ble.service steamvr-v4l2loopback.service \
          steamvr-set-kernel-thread-priorities.service \
-         deckard-audio-setup.service \
+         deckard-audio-setup.service deckard-boot-images.service \
          deckard-fan-control.service deckard-fpga.service \
          deckard-led-control.service deckard-typec-logger.service \
-         set-wifi-mac-address.service iwd.service deckard-charger.service; do
+         deckard-power-monitor.service \
+         set-wifi-mac-address.service set-bluetooth-mac-address.service \
+         iwd.service deckard-charger.service \
+         usb-gadget.target usb-gadget.service usb-gadget-init.service \
+         adbd.service adbd-pre.service adbd-post.service \
+         'dev-usb\x2dffs-adb.mount' \
+         efi.mount esp.mount \
+         'dev-disk-by\x2dpartsets-self-efi.device' \
+         'dev-disk-by\x2dpartsets-shared-esp.device'; do
   ln -sfn /dev/null "$R/etc/systemd/system/${u}"
+  if [[ -d "$R/var/lib/overlays/etc/upper" ]]; then
+    mkdir -p "$R/var/lib/overlays/etc/upper/systemd/system"
+    ln -sfn /dev/null "$R/var/lib/overlays/etc/upper/systemd/system/${u}"
+  fi
 done
+# 7.2.8 exposes the DWC3 UDC. Frame udev then WANTS usb-gadget.target and
+# adbd-post waits forever on functions/ffs.adb/ready (no timeout). First boot
+# stays on the fbcon "gadget enabler" job and SDDM never takes the panel.
+# Steam Deck efi.mount waits 90s for /dev/disk/by-partsets/self/efi (SD/UFS
+# have LABEL=BOOT at /boot, not A/B partsets).
+# set-bluetooth-mac-address Requires=hci0.device with JobTimeout=infinity;
+# on AYN the udev alias never trips and first boot sits on that job.
 
 # ---------------------------------------------------------------------------
 # Audio UCM + Wi-Fi (wpa, not iwd) + BT power + gamescope Wayland session
@@ -432,6 +523,9 @@ install_file "$OVL/usr/lib/steamos/sm8550-bluetooth-setup" \
   "$R/usr/lib/steamos/sm8550-bluetooth-setup" 0755
 install_file "$OVL/usr/lib/systemd/system/sm8550-bluetooth-setup.service" \
   "$R/usr/lib/systemd/system/sm8550-bluetooth-setup.service" 0644
+mkdir -p "$R/usr/lib/systemd/system/set-bluetooth-mac-address.service.d"
+install_file "$OVL/usr/lib/systemd/system/set-bluetooth-mac-address.service.d/99-sm8550.conf" \
+  "$R/usr/lib/systemd/system/set-bluetooth-mac-address.service.d/99-sm8550.conf" 0644
 # Steam writes this fragment to force iwd; pin wpa in /etc and the overlay upper.
 for dest in \
   "$R/etc/NetworkManager/conf.d/99-valve-wifi-backend.conf" \
@@ -471,10 +565,6 @@ ln -sfn /usr/lib/systemd/system/sm8550-bluetooth-setup.service \
   "$R/etc/systemd/system/multi-user.target.wants/sm8550-bluetooth-setup.service"
 ln -sfn /usr/lib/systemd/system/sm8550-bluetooth-setup.service \
   "$R/etc/systemd/system/bluetooth.target.wants/sm8550-bluetooth-setup.service"
-# Keep production logging volatile. Enable persistence only with
-# scripts/sd-debug-boot.sh while diagnosing a specific problem.
-rm -f "$R/etc/systemd/journald.conf.d/99-sm8550-persist.conf"
-rm -rf "$R/var/log/journal"
 # Leave the initramfs/fsck console text (modprobe + "root: clean").
 # Do not unbind fbcon: on MSM the last console frame looks hung.
 rm -f "$R/usr/lib/steamos/sm8550-hide-console" \
@@ -486,9 +576,21 @@ rm -f "$R/usr/lib/steamos/sm8550-hide-console" \
   "$R/usr/lib/systemd/system/graphical.target.wants/sm8550-hide-console.service" \
   "$R/usr/lib/systemd/system/sysinit.target.wants/sm8550-hide-console.service" \
   "$R/usr/lib/systemd/system/multi-user.target.wants/sm8550-hide-console.service"
-# Debug dumps must not paint the panel.
-rm -f "$R/etc/systemd/system/multi-user.target.wants/sm8550-boot-debug.service" \
-      "$R/etc/systemd/system/graphical.target.wants/sm8550-boot-debug-late.service"
+if [[ "${SM8550_DEBUG_BOOT:-0}" == "1" ]]; then
+  log "== debug boot (persist journal + BOOT-DEBUG + gamescope QAM log)"
+  bash "${SCRIPT_DIR}/enable-sm8550-debug-boot.sh" "$R"
+else
+  # Production images stay volatile. Explicit debug: SM8550_DEBUG_BOOT=1
+  # or scripts/sd-debug-boot.sh / scripts/enable-sm8550-debug-boot.sh
+  rm -f "$R/etc/systemd/journald.conf.d/99-sm8550-persist.conf"
+  rm -rf "$R/var/log/journal"
+  rm -f "$R/etc/systemd/system/multi-user.target.wants/sm8550-boot-debug.service" \
+        "$R/etc/systemd/system/graphical.target.wants/sm8550-boot-debug-late.service" \
+        "$R/var/lib/overlays/etc/upper/systemd/system/multi-user.target.wants/sm8550-boot-debug.service" \
+        "$R/var/lib/overlays/etc/upper/systemd/system/graphical.target.wants/sm8550-boot-debug-late.service" \
+        "$R/etc/sm8550-qam-debug" \
+        "$R/var/lib/overlays/etc/upper/sm8550-qam-debug"
+fi
 ln -sfn /usr/lib/systemd/user/sm8550-audio-pipewire.service \
   "$R/etc/systemd/user/default.target.wants/sm8550-audio-pipewire.service"
 # Host enables these explicitly; socket-only leaves gamescope without a sink.
@@ -555,10 +657,10 @@ install_file "$OVL/etc/profile.d/sm8550-gamepad.sh" \
 log "========================================"
 log "== COMPILE MangoHud (external-and-mods/MangoHud, chroot in rootfs)"
 log "========================================"
-if [[ "${SKIP_MANGOHUD_BUILD:-0}" == "1" ]]; then
+if [[ "${SKIP_MANGOHUD_BUILD:-0}" == "1" || ( "${FORCE_REBUILD:-0}" != "1" && -f "$R/usr/lib/mangohud/lib64/libMangoHud.so" ) ]]; then
   [[ -f "$R/usr/lib/mangohud/lib64/libMangoHud.so" ]] \
-    || die "SKIP_MANGOHUD_BUILD=1 but $R/usr/lib/mangohud/lib64/libMangoHud.so missing"
-  log "SKIP_MANGOHUD_BUILD=1 — using existing vendor MangoHud in rootfs"
+    || die "MangoHud missing at $R/usr/lib/mangohud/lib64/libMangoHud.so"
+  log "using existing vendor MangoHud in rootfs (set FORCE_REBUILD=1 to recompile)"
 else
   run_privileged "${SCRIPT_DIR}/build-vendor-mangohud.sh" "$R" \
     || die "vendor MangoHud build failed (need glfw3/dbus/x11 + meson>=1.7 in rootfs)"
@@ -765,14 +867,43 @@ install_file "$OVL/etc/ssh/sshd_config.d/99-sm8550.conf" \
   "$R/etc/ssh/sshd_config.d/99-sm8550.conf" 0644
 install_file "$OVL/etc/systemd/logind.conf.d/20-sm8550-power-key.conf" \
   "$R/etc/systemd/logind.conf.d/20-sm8550-power-key.conf" 0644
+install_file "$OVL/etc/systemd/sleep.conf.d/masi-deep-suspend.conf" \
+  "$R/etc/systemd/sleep.conf.d/masi-deep-suspend.conf" 0644
+install -D -m0755 "$OVL/usr/lib/systemd/system-sleep/10-sm8550-deep-suspend" \
+  "$R/usr/lib/systemd/system-sleep/10-sm8550-deep-suspend"
+install_file "$OVL/usr/lib/systemd/system/systemd-fsck@.service.d/sm8550-after-expand-home.conf" \
+  "$R/usr/lib/systemd/system/systemd-fsck@.service.d/sm8550-after-expand-home.conf" 0644
+install_file "$OVL/usr/lib/systemd/system/systemd-growfs@.service.d/sm8550-after-expand-home.conf" \
+  "$R/usr/lib/systemd/system/systemd-growfs@.service.d/sm8550-after-expand-home.conf" 0644
+install_file "$OVL/usr/lib/udev/rules.d/60-sm8550-usb-autosuspend.rules" \
+  "$R/usr/lib/udev/rules.d/60-sm8550-usb-autosuspend.rules" 0644
+mkdir -p "$R/lib/udev/rules.d"
+install_file "$OVL/usr/lib/udev/rules.d/60-sm8550-usb-autosuspend.rules" \
+  "$R/lib/udev/rules.d/60-sm8550-usb-autosuspend.rules" 0644
 if [[ -d "$R/var/lib/overlays/etc/upper" ]]; then
   install_file "$OVL/etc/systemd/logind.conf.d/20-sm8550-power-key.conf" \
     "$R/var/lib/overlays/etc/upper/systemd/logind.conf.d/20-sm8550-power-key.conf" 0644
+  install_file "$OVL/etc/systemd/sleep.conf.d/masi-deep-suspend.conf" \
+    "$R/var/lib/overlays/etc/upper/systemd/sleep.conf.d/masi-deep-suspend.conf" 0644
   install_file "$OVL/etc/ssh/sshd_config.d/99-sm8550.conf" \
     "$R/var/lib/overlays/etc/upper/ssh/sshd_config.d/99-sm8550.conf" 0644
 fi
+install_file "$OVL/usr/bin/sm8550-fix-sshd" \
+  "$R/usr/bin/sm8550-fix-sshd" 0755
 install_file "$OVL/usr/lib/systemd/system/sm8550-sshd.service" \
   "$R/usr/lib/systemd/system/sm8550-sshd.service" 0644
+mkdir -p "$R/usr/lib/systemd/system/sshd.service.d"
+install_file "$OVL/usr/lib/systemd/system/sshd.service.d/99-sm8550-hostkeys.conf" \
+  "$R/usr/lib/systemd/system/sshd.service.d/99-sm8550-hostkeys.conf" 0644
+if [[ -f "$OVL/etc/X11/default-display-manager" ]]; then
+  install_file "$OVL/etc/X11/default-display-manager" \
+    "$R/etc/X11/default-display-manager" 0644
+  if [[ -d "$R/var/lib/overlays/etc/upper" ]]; then
+    mkdir -p "$R/var/lib/overlays/etc/upper/X11"
+    install_file "$OVL/etc/X11/default-display-manager" \
+      "$R/var/lib/overlays/etc/upper/X11/default-display-manager" 0644
+  fi
+fi
 mkdir -p "$R/etc/systemd/system/multi-user.target.wants" \
   "$R/var/lib/overlays/etc/upper/systemd/system/multi-user.target.wants"
 ln -sfn /usr/lib/systemd/system/sm8550-sshd.service \
@@ -905,6 +1036,12 @@ rm -f "$HOME_DST/.config/steamos-manager/state.toml"
 bash "${SCRIPT_DIR}/install-oobe-update-fix.sh" "$R"
 bash "${SCRIPT_DIR}/install-plasma-desktop-switch.sh" "$R"
 bash "${SCRIPT_DIR}/ensure-steam-home-for-image.sh" "$R" "$HOME_DST"
+if [[ "${SM8550_DEBUG_BOOT:-0}" == "1" ]]; then
+  bash "${SCRIPT_DIR}/enable-sm8550-debug-boot.sh" "$R" "$HOME_DST"
+fi
+log "== restore Wayland 0.26 SONAME links (Lutris/ALARM leftover)"
+bash "${SCRIPT_DIR}/restore-wayland-after-lutris.sh" "$R" \
+  || die "wayland 0.26 SONAME restore failed (kwin needs cursor/server/egl 0.26)"
 rm -f "$R/usr/share/vulkan/implicit_layer.d/MangoHud-next.aarch64.json" 2>/dev/null || true
 bash "${SCRIPT_DIR}/verify-qam-image-contract.sh" "$R" "$HOME_DST"
 
@@ -913,7 +1050,7 @@ log "== summary"
   echo "gamescope: $(file -b "$R/usr/bin/gamescope")"
   echo "gamescope-md5: $(md5sum "$R/usr/bin/gamescope" | awk '{print $1}')"
   echo "KERNEL:    $(file -b "$R/boot/KERNEL")"
-  echo "modules:   $R/usr/lib/modules/7.0.14-edge-sm8550"
+  echo "modules:   $R/usr/lib/modules/${KREL}"
   echo "mesa:      $(ls -l "$R/usr/lib/libvulkan_freedreno.so")"
   echo "turnip-md5: $(md5sum "$R/usr/lib/libvulkan_freedreno.so" | awk '{print $1}')"
   echo "mangohud:  $(ls -l "$R/usr/lib/mangohud/lib64/libMangoHud.so" 2>/dev/null || echo missing)"
@@ -929,9 +1066,14 @@ log "== summary"
   echo "offload:   $(ls -ld "$R/home/.steamos/offload/var/lib/flatpak" 2>/dev/null || echo missing)"
   echo "gamescope-touch: $(grep -o 'default-touch-mode [0-9]' "$R/usr/lib/steamos/gamescope-session" 2>/dev/null || echo missing)"
   echo "gamescope-im: $(grep -E 'QT_IM_MODULE|GTK_IM_MODULE' "$R/usr/lib/steamos/gamescope-session" 2>/dev/null | head -2 || echo missing)"
+  echo "wcn7850-fw: $(md5sum "$R/usr/lib/firmware/ath12k/WCN7850/hw2.0/amss.bin" 2>/dev/null || echo missing)"
   echo "steamosctl: $(head -1 "$R/usr/bin/steamosctl" 2>/dev/null || echo missing)"
   echo "plasma.desktop: $(grep ^Exec= "$R/usr/share/wayland-sessions/plasma.desktop" 2>/dev/null || echo missing)"
   echo "wayland-client: $(readlink -f "$R/usr/lib/libwayland-client.so.0" 2>/dev/null || echo missing)"
+  echo "wayland-cursor: $(readlink -f "$R/usr/lib/libwayland-cursor.so.0" 2>/dev/null || echo missing)"
+  echo "wayland-server: $(readlink -f "$R/usr/lib/libwayland-server.so.0" 2>/dev/null || echo missing)"
+  echo "wayland-egl:    $(readlink -f "$R/usr/lib/libwayland-egl.so.1" 2>/dev/null || echo missing)"
+  echo "plasma-session: $(ls -l "$R/usr/lib/steamos/sm8550-plasma-session" 2>/dev/null || echo missing)"
   echo "dot-steam: $(find "$HOME_DST/.steam" -maxdepth 1 -type l 2>/dev/null | wc -l) symlinks"
   echo "home:      $(find "$HOME_DST" -maxdepth 3 -printf '%p\n' | head -40)"
 } | tee -a "$LOG"

@@ -1,0 +1,4 @@
+2026-09-28T12:17:42+02:00
+mesa=26.2.3
+patches=SM8550+SM8750-a830
+source=/home/masies/Desktop/steamos-oficial/output/src/mesa-26.2.3

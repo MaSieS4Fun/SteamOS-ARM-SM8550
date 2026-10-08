@@ -1,0 +1,33 @@
+From: MaSi <noreply@masi.local>
+Subject: [PATCH] tty: serial: qcom-geni: mask non-console IRQ across system suspend
+
+Armada 1006. Stops irq 190 'nobody cared' from the gamepad MCU UART.
+
+---
+--- a/drivers/tty/serial/qcom_geni_serial.c	2026-09-29 15:43:48.692209572 +0200
++++ b/drivers/tty/serial/qcom_geni_serial.c	2026-09-29 15:43:48.692297383 +0200
+@@ -1985,6 +1985,14 @@
+ 	struct qcom_geni_private_data *private_data = uport->private_data;
+ 
+ 	/*
++	 * A peer that keeps streaming into a non-console geni UART (gamepad
++	 * MCU) storms the RX IRQ once uart_suspend_port() sets
++	 * uport->suspended. Mask it here while the ISR still acks the line.
++	 */
++	if (!uart_console(uport))
++		disable_irq(uport->irq);
++
++	/*
+ 	 * This is done so we can hit the lowest possible state in suspend
+ 	 * even with no_console_suspend
+ 	 */
+@@ -2003,6 +2011,9 @@
+ 	struct qcom_geni_private_data *private_data = uport->private_data;
+ 
+ 	ret = uart_resume_port(private_data->drv, uport);
++	/* Balance the disable_irq() taken in qcom_geni_serial_suspend(). */
++	if (!uart_console(uport))
++		enable_irq(uport->irq);
+ 	if (uart_console(uport)) {
+ 		geni_icc_set_tag(&port->se, QCOM_ICC_TAG_ALWAYS);
+ 		geni_icc_set_bw(&port->se);

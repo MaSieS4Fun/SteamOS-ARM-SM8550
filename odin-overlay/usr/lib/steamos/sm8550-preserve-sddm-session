@@ -1,11 +1,26 @@
 #!/bin/bash
 # Preserve SteamOS Manager's temporary SDDM choice if another cleanup races it.
+# Switch to Desktop must survive an SDDM restart in *this* boot only.
+# One-shot Plasma is written to /run and pointed at from
+# zzz-sm8550-session-override.conf so a reboot cannot keep Plasma.
+# Persistent desktop (default_login_mode=Desktop) keeps a real file on /etc.
 set -euo pipefail
 
 DIR="${SM8550_SDDM_CONF_DIR:-/etc/sddm.conf.d}"
 OUT="$DIR/zzz-sm8550-session-override.conf"
+RUN_OUT="${SM8550_SDDM_ONESHOT:-/run/sm8550/sddm-autologin.conf}"
+STATE="${SM8550_STEAMOS_MANAGER_STATE:-/home/steamos/.config/steamos-manager/state.toml}"
 SESSION_USER="${SM8550_SESSION_USER:-steamos}"
 session=
+
+# Boot reset is deleting leftovers; do not copy Plasma back onto the overlay.
+[[ -e "${SM8550_SDDM_RESET_FLAG:-/run/sm8550-resetting-sddm}" ]] && exit 0
+
+login_mode_is_desktop() {
+  [[ -r "${STATE}" ]] || return 1
+  grep -qiE '^[[:space:]]*default_login_mode[[:space:]]*=[[:space:]]*"(Desktop|desktop)"' \
+    "${STATE}"
+}
 
 for file in \
   "$DIR/zzt-steamos-temp-login.conf" \
@@ -26,7 +41,7 @@ done
 
 [[ -n "$session" ]] || exit 0
 
-tmp="$(mktemp /run/sm8550-sddm-session.XXXXXX)"
+tmp="$(mktemp "${TMPDIR:-/run}/sm8550-sddm-session.XXXXXX")"
 trap 'rm -f "$tmp"' EXIT
 cat >"$tmp" <<EOF
 [Autologin]
@@ -35,7 +50,31 @@ Session=$session
 User=steamos
 EOF
 
-if [[ ! -r "$OUT" ]] || ! cmp -s "$tmp" "$OUT"; then
-  install -o "$SESSION_USER" -g "$SESSION_USER" -m0644 "$tmp" "$OUT"
-  logger -t sm8550-session "preserved SDDM session: $session"
+if [[ "$session" == gamescope-wayland.desktop ]]; then
+  rm -f "$OUT" "$RUN_OUT"
+  logger -t sm8550-session "cleared one-shot SDDM override (gamescope)"
+  exit 0
 fi
+
+if login_mode_is_desktop; then
+  if [[ ! -e "$OUT" || -L "$OUT" ]] || ! cmp -s "$tmp" "$OUT"; then
+    rm -f "$OUT"
+    install -o "$SESSION_USER" -g "$SESSION_USER" -m0644 "$tmp" "$OUT"
+    logger -t sm8550-session "preserved persistent SDDM session: $session"
+  fi
+  exit 0
+fi
+
+mkdir -p "$(dirname "$RUN_OUT")"
+if [[ ! -r "$RUN_OUT" ]] || ! cmp -s "$tmp" "$RUN_OUT"; then
+  install -m0644 "$tmp" "$RUN_OUT"
+fi
+if [[ -L "$OUT" ]]; then
+  [[ "$(readlink -f "$OUT" 2>/dev/null || true)" == "$(readlink -f "$RUN_OUT")" ]] || ln -sfn "$RUN_OUT" "$OUT"
+elif [[ -e "$OUT" ]]; then
+  rm -f "$OUT"
+  ln -sfn "$RUN_OUT" "$OUT"
+else
+  ln -sfn "$RUN_OUT" "$OUT"
+fi
+logger -t sm8550-session "preserved one-shot SDDM session on /run: $session"

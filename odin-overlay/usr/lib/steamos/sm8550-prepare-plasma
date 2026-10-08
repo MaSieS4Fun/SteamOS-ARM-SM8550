@@ -19,6 +19,11 @@ export XDG_CURRENT_DESKTOP=KDE
 export XDG_SESSION_DESKTOP=KDE
 export DESKTOP_SESSION=plasma
 
+# Desktop is a PC: allow the kernel to notice a USB-C monitor. Game Mode
+# turns this back off in steamos-session-select / gamescope-session.
+rm -f "${HOME:-/home/steamos}/.local/state/sm8550-force-speaker"
+/usr/lib/steamos/sm8550-drm-poll on >/dev/null 2>&1 || true
+
 if command -v systemctl >/dev/null 2>&1; then
   systemctl --user unset-environment \
     QT_QPA_PLATFORM GAMESCOPE_WAYLAND_DISPLAY GAMESCOPE_SESSION_TARGET \

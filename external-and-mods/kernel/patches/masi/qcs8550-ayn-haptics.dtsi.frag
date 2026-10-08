@@ -12,6 +12,9 @@
 		interrupts = <0x07 0xf0 0x1 IRQ_TYPE_EDGE_RISING>;
 		interrupt-names = "fifo-empty";
 		qcom,vmax-mv = <5000>;
+		/* ERM/hard: same as working 7.0.14. Without this the driver
+		 * stays in LRA/sine (soft) and rumble stays tiny at any gain. */
+		qcom,use-erm;
 		qcom,brake-mode = <BRAKE_CLOSE_LOOP>;
 		qcom,brake-pattern = /bits/ 8 <0xff 0x3f 0x1f>;
 		qcom,lra-period-us = <5880>;

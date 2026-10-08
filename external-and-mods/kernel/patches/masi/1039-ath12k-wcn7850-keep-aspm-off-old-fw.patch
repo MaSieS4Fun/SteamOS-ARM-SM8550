@@ -1,0 +1,53 @@
+From: MaSi-OS <masies@local>
+Subject: [PATCH] ath12k: WCN7850 keep ASPM off + log AMSS path (7.0.14 FW)
+
+7.2.8 ath12k_wifi7 binds WCN7850, MHI "Power on setup success", then never
+reaches AMSS / wlan. Same 7.0.14 amss.bin+board-2.bin works on 7.0.14.
+
+ath12k only clears ASPM on the endpoint. The PCIe root port can still enter
+L1 and the AMSS switch hangs. Do not restore ASPM on WCN7850. Log the AMSS
+path at info so a failed boot shows API1 amss.bin vs firmware-2.bin.
+
+Signed-off-by: MaSi-OS <masies@local>
+
+diff -u -N -r a/drivers/net/wireless/ath/ath12k/mhi.c b/drivers/net/wireless/ath/ath12k/mhi.c
+--- a/drivers/net/wireless/ath/ath12k/mhi.c	2026-09-29 01:52:05.094920553 +0200
++++ b/drivers/net/wireless/ath/ath12k/mhi.c	2026-09-29 01:52:05.187969579 +0200
+@@ -242,6 +242,12 @@
+ 		}
+ 	}
+ 
++	if (mhi_ctrl->fw_image)
++		ath12k_info(ab, "mhi AMSS %s\n", mhi_ctrl->fw_image);
++	else
++		ath12k_info(ab, "mhi AMSS from firmware-N.bin (%zu bytes)\n",
++			    mhi_ctrl->fw_sz);
++
+ 	ret = ath12k_mhi_get_msi(ab_pci);
+ 	if (ret) {
+ 		ath12k_err(ab, "failed to get msi for mhi\n");
+diff -u -N -r a/drivers/net/wireless/ath/ath12k/pci.c b/drivers/net/wireless/ath/ath12k/pci.c
+--- a/drivers/net/wireless/ath/ath12k/pci.c	2026-09-29 01:52:05.097880460 +0200
++++ b/drivers/net/wireless/ath/ath12k/pci.c	2026-09-29 01:52:05.188179472 +0200
+@@ -1140,7 +1140,8 @@
+ 
+ 	set_bit(ATH12K_PCI_FLAG_INIT_DONE, &ab_pci->flags);
+ 
+-	if (test_bit(ATH12K_PCI_FLAG_MULTI_MSI_VECTORS, &ab_pci->flags))
++	if (test_bit(ATH12K_PCI_FLAG_MULTI_MSI_VECTORS, &ab_pci->flags) &&
++	    ab->hw_params->supports_aspm)
+ 		ath12k_pci_aspm_restore(ab_pci);
+ 	else
+ 		ath12k_info(ab, "leaving PCI ASPM disabled to avoid MHI M2 problems\n");
+diff -u -N -r a/drivers/net/wireless/ath/ath12k/wifi7/hw.c b/drivers/net/wireless/ath/ath12k/wifi7/hw.c
+--- a/drivers/net/wireless/ath/ath12k/wifi7/hw.c	2026-09-29 01:52:05.100236365 +0200
++++ b/drivers/net/wireless/ath/ath12k/wifi7/hw.c	2026-09-29 01:52:05.188310200 +0200
+@@ -521,7 +521,7 @@
+ 
+ 		.iova_mask = ATH12K_PCIE_MAX_PAYLOAD_SIZE - 1,
+ 
+-		.supports_aspm = true,
++		.supports_aspm = false,
+ 
+ 		.ce_ie_addr = NULL,
+ 		.ce_remap = NULL,

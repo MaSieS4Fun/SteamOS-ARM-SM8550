@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# linux-7.2.x bridges — Armbian sm8550-7.0 patches + MaSi overlays on kernel.org 7.2.
+# linux-7.2.x bridges — live Armbian sm8550-7.2 (renamed files) + MaSi overlays
+# on kernel.org 7.2. Pattern matches survive Armbian filename churn.
 set -euo pipefail
 
 _kernel_is_72_series() {
@@ -24,51 +25,51 @@ _armbian_patch_bridge_72() {
     local patch="${patch_dir}/${base}"
 
     case "${base}" in
-    0007-mmc-sdhci-msm-Toggle-the-FIFO-write-clock-after-unga.patch)
+    *Toggle-the-FIFO*|*sdhci-msm*fifo*|*sdhci-msm*FIFO*)
         bridge_72_sdhci_msm_fifo_toggle "${src_dir}" && return 0
         _try_apply_armbian_patch_loose "${src_dir}" "${patch}" && return 0
         ;;
-    0008-ASoC-codecs-aw88166-AYN-Products-Specific-modificati.patch)
+    *aw88166*)
         bridge_72_aw88166_ayn "${src_dir}" && return 0
         ;;
-    0016-drm-panel-Add-panel-driver-for-Xm-Plus-XM91080G-base.patch)
+    *XM91080G*|*xm91080g*)
         _try_apply_armbian_patch_loose "${src_dir}" "${patch}" || true
         _ensure_makefile_panel_obj \
             "${src_dir}/drivers/gpu/drm/panel/Makefile" \
             "DRM_PANEL_BOE_XM91080G" "panel-boe-xm91080g.o"
         [[ -f "${src_dir}/drivers/gpu/drm/panel/panel-boe-xm91080g.c" ]] && return 0
         ;;
-    0017-drm-panel-Add-panel-driver-for-Chipone-ICNA35XX-base.patch)
+    *ICNA35XX*|*icna35xx*)
         _try_apply_armbian_patch_loose "${src_dir}" "${patch}" || true
         _ensure_makefile_panel_obj \
             "${src_dir}/drivers/gpu/drm/panel/Makefile" \
             "DRM_PANEL_CHIPONE_ICNA35XX" "panel-chipone-icna35xx.o"
         [[ -f "${src_dir}/drivers/gpu/drm/panel/panel-chipone-icna35xx.c" ]] && return 0
         ;;
-    0018-drm-panel-Add-panel-driver-for-DDIC-CH13726A-based-p.patch)
+    *CH13726A*|*ch13726a*)
         [[ -f "${src_dir}/drivers/gpu/drm/panel/panel-chipwealth-ch13726a.c" ]] && return 0
         _try_apply_armbian_patch_loose "${src_dir}" "${patch}" && return 0
         ;;
-    0022-regulator-add-sgm3804-i2c-regulator-for-panel-power-.patch)
+    *sgm3804*)
         [[ -f "${src_dir}/drivers/regulator/sgm3804-regulator.c" ]] && return 0
         ;;
-    0026-SM8550-Fix-L2-cache-for-CPU2-and-add-cache-sizes.patch)
+    *Fix-L2-cache*|*cache-sizes*)
         bridge_72_sm8550_cache_sizes "${src_dir}" && return 0
         _try_apply_armbian_patch_loose "${src_dir}" "${patch}" && return 0
         ;;
-    0027-SM8550-Add-DDR-LLCC-L3-CPU-bandwidth-scaling.patch)
+    *DDR-LLCC*|*bandwidth-scaling*)
         grep -q 'operating-points-v2 = <&cpu0_opp_table>' \
             "${src_dir}/arch/arm64/boot/dts/qcom/sm8550.dtsi" 2>/dev/null && return 0
         ;;
-    0028-arm64-dts-qcom-sm8550-Update-EAS-properties.patch)
+    *Update-EAS*)
         grep -q 'capacity-dmips-mhz = <326>' \
             "${src_dir}/arch/arm64/boot/dts/qcom/sm8550.dtsi" 2>/dev/null && return 0
         ;;
-    0029-arm64-dts-qcom-sm8550-add-UART15.patch)
+    *add-UART15*|*UART15*)
         grep -q 'uart15: serial@89c000' \
             "${src_dir}/arch/arm64/boot/dts/qcom/sm8550.dtsi" 2>/dev/null && return 0
         ;;
-    0009-arm64-dts-qcom-Added-pmk8550_pwm.patch)
+    *pmk8550_pwm*|*Added-pmk8550*)
         grep -q 'pmk8550_pwm: pwm' \
             "${src_dir}/arch/arm64/boot/dts/qcom/pmk8550.dtsi" 2>/dev/null && return 0
         ;;
@@ -481,9 +482,36 @@ path.write_text(text)
 PY
 }
 
+# GNU patch cannot apply MaSi 1032/1052/1040–1043/1055 on live Armbian sm8550-7.2
+# (abs-params context, malformed hunk counts, empty 1043). Source of truth:
+# scripts/apply-masi-72-overlays.py — also avoids 1042's SBL-already-SBL skip
+# that dropped AMSS download.
+_masi_apply_72_overlays() {
+    local src_dir="$1"
+    shift
+    local py="${ROOT}/scripts/apply-masi-72-overlays.py"
+
+    _kernel_is_72_series "${KERNEL_VER:-}" || return 1
+    [[ -f "${py}" ]] || {
+        echo "  FAIL missing ${py}" >&2
+        return 1
+    }
+    python3 "${py}" "${src_dir}" "$@"
+}
+
 _masi_patch_bridge_72() {
     local base="$1" src_dir="$2"
     case "${base}" in
+    1032-input-rsinput-suspend-resume-center-sticks.patch|\
+    1052-input-rsinput-quiesce-mcu-and-drop-vdd-on-suspend.patch)
+        _masi_apply_72_overlays "${src_dir}" --rsinput && return 0
+        ;;
+    1040-ath12k-wcn7850-aspm-parent-port-mhi-timeout.patch|\
+    1041-mhi-host-poll-bhi-bhie-without-irq.patch|\
+    1042-mhi-host-noautoen-irq-poll-sbl-ee.patch|\
+    1043-mhi-ath12k-wcn7850-bhi-full-amss-drain-events.patch)
+        _masi_apply_72_overlays "${src_dir}" --mhi && return 0
+        ;;
     1006-scsi-ufs-drain-relink-completions-out-of-band-pm.patch)
         bridge_72_ufshcd_1006_intr "${src_dir}" && return 0
         ;;
@@ -682,26 +710,17 @@ PY
 bridge_72_asoc_quiet_einval() {
     local src_dir="$1" f="${src_dir}/sound/soc/soc-utils.c"
     [[ -f "${f}" ]] || return 1
-    if grep -q 'case -EINVAL:' "${f}" \
-        && grep -A6 'case -EINVAL:' "${f}" | grep -q 'dev_dbg(dev, "ASoC error'; then
-        return 0
-    fi
 
     python3 - "${f}" <<'PY'
+import re
 import sys
 from pathlib import Path
 
 path = Path(sys.argv[1])
 text = path.read_text()
 
-needle = (
-    "\tcase -EOPNOTSUPP:\n"
-    "\t\tbreak;\n"
-    "\tdefault:"
-)
-insert = (
-    "\tcase -EOPNOTSUPP:\n"
-    "\t\tbreak;\n"
+# Re-applying 1037 with patch -f on an already-patched tree duplicates this case.
+dup = (
     "\tcase -EINVAL:\n"
     "\t\tva_start(args, fmt);\n"
     "\t\tvaf.fmt = fmt;\n"
@@ -710,14 +729,31 @@ insert = (
     "\t\tdev_dbg(dev, \"ASoC error (%d): %pV\", ret, &vaf);\n"
     "\t\tva_end(args);\n"
     "\t\tbreak;\n"
+)
+while text.count(dup) > 1:
+    text = text.replace(dup, "", 1)
+
+needle = (
+    "\tcase -EOPNOTSUPP:\n"
+    "\t\tbreak;\n"
     "\tdefault:"
 )
-if needle not in text:
+insert = (
+    "\tcase -EOPNOTSUPP:\n"
+    "\t\tbreak;\n" + dup +
+    "\tdefault:"
+)
+if "\tcase -EINVAL:\n" not in text:
+    if needle not in text:
+        sys.exit(1)
+    text = text.replace(needle, insert, 1)
+
+if len(re.findall(r"^\tcase -EINVAL:$", text, flags=re.M)) != 1:
     sys.exit(1)
-path.write_text(text.replace(needle, insert, 1))
+if 'dev_dbg(dev, "ASoC error' not in text:
+    sys.exit(1)
+path.write_text(text)
 PY
-    grep -q 'case -EINVAL:' "${f}" \
-        && grep -A6 'case -EINVAL:' "${f}" | grep -q 'dev_dbg(dev, "ASoC error'
 }
 
 bridge_72_soundwire_quiet_port_mismatch() {
@@ -1086,43 +1122,43 @@ sys.exit(0)
 PY
 }
 
+# 7.2 vanilla already has POST_CHANGE → ufs_qcom_link_startup_post_change().
+# MaSi 1011 inserts a second POST_CHANGE for QMP RX LineCfg. Merge those
+# consecutive arms only — the file has more POST_CHANGE in other functions.
 bridge_72_fixup_ufs_qcom_post_change() {
     local f="$1/drivers/ufs/host/ufs-qcom.c"
     [[ -f "${f}" ]] || return 0
     grep -q 'ufs_qcom_link_startup_post_change' "${f}" || return 0
     grep -q 'qcom_qmp_ufs_ctrl_rx_linecfg' "${f}" || return 0
-    [[ "$(grep -c 'case POST_CHANGE:' "${f}")" -le 1 ]] && return 0
 
     python3 - "${f}" <<'PY'
-import re
 import sys
 from pathlib import Path
 
 path = Path(sys.argv[1])
 text = path.read_text()
-
-merged = re.sub(
-    r"case POST_CHANGE:\n"
-    r"\t\tufs_qcom_link_startup_post_change\(hba\);\n"
-    r"\t\tbreak;\n"
-    r"case POST_CHANGE:\n"
-    r"(\t\tlinecfg_err = qcom_qmp_ufs_ctrl_rx_linecfg\(host->generic_phy, false\);\n"
-    r"\t\tif \(linecfg_err && linecfg_err != -EOPNOTSUPP\)\n"
-    r"\t\t\tdev_warn\(hba->dev, \"failed to disable RX LineCfg: %d\\n\",\n"
-    r"\t\t\t\t linecfg_err\);\n)"
-    r"\t\tbreak;",
-    r"case POST_CHANGE:\n"
-    r"\t\tufs_qcom_link_startup_post_change(hba);\n"
-    r"\1"
-    r"\t\tbreak;",
-    text,
-    count=1,
+old = (
+    "\t\tufs_qcom_link_startup_post_change(hba);\n"
+    "\t\tbreak;\n"
+    "\tcase POST_CHANGE:\n"
+    "\t\tlinecfg_err = qcom_qmp_ufs_ctrl_rx_linecfg(host->generic_phy, false);\n"
 )
-if merged == text or merged.count("case POST_CHANGE:") != 1:
-    sys.exit(1)
-path.write_text(merged)
+new = (
+    "\t\tufs_qcom_link_startup_post_change(hba);\n"
+    "\t\tlinecfg_err = qcom_qmp_ufs_ctrl_rx_linecfg(host->generic_phy, false);\n"
+)
+if old in text:
+    path.write_text(text.replace(old, new, 1))
+    print("  OK   ufs-qcom: merge duplicate POST_CHANGE cases", file=sys.stderr)
+elif (
+    "ufs_qcom_link_startup_post_change(hba);\n"
+    "\t\tlinecfg_err = qcom_qmp_ufs_ctrl_rx_linecfg(host->generic_phy, false);"
+) in text:
+    print("  OK   ufs-qcom: POST_CHANGE already merged", file=sys.stderr)
+else:
+    print("  FAIL ufs-qcom: cannot merge duplicate POST_CHANGE", file=sys.stderr)
+    raise SystemExit(1)
 PY
-    echo "  OK   ufs-qcom: merge duplicate POST_CHANGE cases" >&2
 }
 
 bridge_72_fixup_compile_apis() {
@@ -1146,8 +1182,9 @@ bridge_72_fixup_compile_apis() {
     bridge_72_fixup_ath12k_serial "${src_dir}" || failed=$((failed + 1))
     bridge_72_fixup_btqca_serial "${src_dir}" || failed=$((failed + 1))
     bridge_72_fixup_hynitron_gpio "${src_dir}" || failed=$((failed + 1))
-    bridge_72_fixup_ufs_qcom_post_change "${src_dir}" || true
+    bridge_72_fixup_ufs_qcom_post_change "${src_dir}" || failed=$((failed + 1))
     bridge_72_fixup_dts_duplicates "${src_dir}" || true
+    bridge_72_asoc_quiet_einval "${src_dir}" || true
 
     [[ "${failed}" -eq 0 ]]
 }
@@ -1188,6 +1225,13 @@ verify_sm8550_72_compile() {
         ok=0
     fi
 
+    if grep -A2 'ufs_qcom_link_startup_post_change(hba);' \
+            "${src_dir}/drivers/ufs/host/ufs-qcom.c" 2>/dev/null \
+        | grep -q 'case POST_CHANGE:'; then
+        echo "  FAIL ufs-qcom: duplicate POST_CHANGE in link_startup_notify" >&2
+        ok=0
+    fi
+
     [[ "${ok}" -eq 1 ]] && echo "  OK   ath12k + panels + hynitron 7.2 APIs" >&2
 
     if grep -q 'remoteproc_adsp_glink' \
@@ -1212,5 +1256,37 @@ verify_sm8550_72_required() {
     grep -q 'ufshcd_relinking' "${src_dir}/drivers/ufs/core/ufshcd.c" 2>/dev/null || ok=0
     grep -q 'ufshcd_pm_drain_completions' "${src_dir}/drivers/ufs/core/ufshcd.c" 2>/dev/null || ok=0
     grep -q 'tsens_irq_wake_enabled' "${src_dir}/drivers/thermal/qcom/tsens.c" 2>/dev/null || ok=0
+    grep -q 'complete_clkgate_hold' "${src_dir}/include/ufs/ufshcd.h" 2>/dev/null || ok=0
+    grep -q 'link recovered; runtime clock gating disabled' \
+        "${src_dir}/drivers/ufs/core/ufshcd.c" 2>/dev/null || ok=0
+    grep -q 'rsinput_report_sticks_centered' \
+        "${src_dir}/drivers/input/joystick/rsinput.c" 2>/dev/null || ok=0
+    grep -q 'drv->vdd_off = true' \
+        "${src_dir}/drivers/input/joystick/rsinput.c" 2>/dev/null || ok=0
+    grep -q 'EXPORT_SYMBOL_GPL(qcom_spmi_haptics_global_stop)' \
+        "${src_dir}/drivers/input/misc/qcom-hv-haptics.c" 2>/dev/null || ok=0
+    grep -q 'pci_upstream_bridge(ab_pci->pdev)' \
+        "${src_dir}/drivers/net/wireless/ath/ath12k/pci.c" 2>/dev/null || ok=0
+    grep -q 'ath12k_masi_s2ram_force' \
+        "${src_dir}/drivers/net/wireless/ath/ath12k/core.c" 2>/dev/null || ok=0
+    grep -q 'timeout_ms = 20000' \
+        "${src_dir}/drivers/net/wireless/ath/ath12k/wifi7/mhi.c" 2>/dev/null || ok=0
+    grep -q 'loading AMSS inline' \
+        "${src_dir}/drivers/bus/mhi/host/boot.c" 2>/dev/null || ok=0
+    grep -q 'AMSS BHIe ret=' \
+        "${src_dir}/drivers/bus/mhi/host/boot.c" 2>/dev/null || ok=0
+    grep -q 'drain channel command' \
+        "${src_dir}/drivers/bus/mhi/host/main.c" 2>/dev/null || ok=0
+    grep -q 'mhi_start_event_poll' \
+        "${src_dir}/drivers/bus/mhi/host/pm.c" 2>/dev/null || ok=0
+    grep -q 'IRQF_NO_AUTOEN' \
+        "${src_dir}/drivers/bus/mhi/host/init.c" 2>/dev/null || ok=0
+    grep -q 'mhi_drain_events' \
+        "${src_dir}/drivers/bus/mhi/host/main.c" 2>/dev/null || ok=0
+    if grep -A2 'ufs_qcom_link_startup_post_change(hba);' \
+            "${src_dir}/drivers/ufs/host/ufs-qcom.c" 2>/dev/null \
+        | grep -q 'case POST_CHANGE:'; then
+        ok=0
+    fi
     [[ "${ok}" -eq 1 ]]
 }

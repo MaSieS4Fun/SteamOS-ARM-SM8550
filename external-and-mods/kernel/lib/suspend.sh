@@ -65,6 +65,15 @@ install_deep_suspend_config() {
     install -m644 "${ROOT}/config/sleep/masi-logind-suspend.conf" \
         /etc/systemd/logind.conf.d/masi-suspend.conf
 
+    local hook_src="${ROOT}/../../odin-overlay/usr/lib/systemd/system-sleep/10-sm8550-deep-suspend"
+    if [[ ! -f "${hook_src}" ]]; then
+        hook_src="${ROOT}/../odin-overlay/usr/lib/systemd/system-sleep/10-sm8550-deep-suspend"
+    fi
+    if [[ -f "${hook_src}" ]]; then
+        install -D -m755 "${hook_src}" \
+            /usr/lib/systemd/system-sleep/10-sm8550-deep-suspend
+    fi
+
     systemctl daemon-reload 2>/dev/null || true
-    echo "  deep-suspend: systemd sleep + logind (mem / power key)" >&2
+    echo "  deep-suspend: systemd sleep + logind (mem / power key) + USB/BT hook" >&2
 }

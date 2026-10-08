@@ -1,0 +1,11 @@
+[Unit]
+Description=AYN Thor Game Mode touch routing (no-op unless ayn,thor)
+ConditionPathExists=/proc/device-tree/compatible
+After=systemd-udevd.service
+
+[Service]
+Type=simple
+ExecCondition=/bin/sh -c 'tr -d "\\0" < /proc/device-tree/compatible | grep -q ayn,thor'
+ExecStart=/usr/lib/steamos/sm8550-thor-gamescope-touch watch
+ExecStop=/usr/lib/steamos/sm8550-thor-gamescope-touch stop
+Restart=no

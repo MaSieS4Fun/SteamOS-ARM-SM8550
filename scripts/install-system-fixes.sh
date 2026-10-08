@@ -52,29 +52,34 @@ install -m 0755 "$OVL/usr/lib/steamos/steamos-sm8550-expand-home" \
   "$R/usr/lib/steamos/steamos-sm8550-expand-home"
 install -m 0644 "$OVL/usr/lib/systemd/system/steamos-sm8550-expand-home.service" \
   "$R/usr/lib/systemd/system/steamos-sm8550-expand-home.service"
-mkdir -p "$R/usr/lib/systemd/system/local-fs.target.wants" \
-  "$R/usr/lib/systemd/system/multi-user.target.wants" \
-  "$R/etc/systemd/system/local-fs.target.wants" \
-  "$R/etc/systemd/system/multi-user.target.wants"
+mkdir -p "$R/usr/lib/systemd/system/local-fs-pre.target.wants" \
+  "$R/etc/systemd/system/local-fs-pre.target.wants" \
+  "$R/etc/systemd/system/multi-user.target.wants" \
+  "$R/usr/lib/systemd/system/systemd-fsck@.service.d" \
+  "$R/usr/lib/systemd/system/systemd-growfs@.service.d"
+# Only local-fs-pre. local-fs/multi-user wants raced systemd-fsck (~90s on fbcon).
+rm -f "$R/usr/lib/systemd/system/local-fs.target.wants/steamos-sm8550-expand-home.service" \
+      "$R/usr/lib/systemd/system/multi-user.target.wants/steamos-sm8550-expand-home.service" \
+      "$R/etc/systemd/system/local-fs.target.wants/steamos-sm8550-expand-home.service" \
+      "$R/etc/systemd/system/multi-user.target.wants/steamos-sm8550-expand-home.service"
 ln -sfn /usr/lib/systemd/system/steamos-sm8550-expand-home.service \
-  "$R/usr/lib/systemd/system/local-fs.target.wants/steamos-sm8550-expand-home.service"
+  "$R/usr/lib/systemd/system/local-fs-pre.target.wants/steamos-sm8550-expand-home.service"
 ln -sfn /usr/lib/systemd/system/steamos-sm8550-expand-home.service \
-  "$R/usr/lib/systemd/system/multi-user.target.wants/steamos-sm8550-expand-home.service"
-ln -sfn /usr/lib/systemd/system/steamos-sm8550-expand-home.service \
-  "$R/etc/systemd/system/local-fs.target.wants/steamos-sm8550-expand-home.service"
-ln -sfn /usr/lib/systemd/system/steamos-sm8550-expand-home.service \
-  "$R/etc/systemd/system/multi-user.target.wants/steamos-sm8550-expand-home.service"
+  "$R/etc/systemd/system/local-fs-pre.target.wants/steamos-sm8550-expand-home.service"
+install -m 0644 "$OVL/usr/lib/systemd/system/systemd-fsck@.service.d/sm8550-after-expand-home.conf" \
+  "$R/usr/lib/systemd/system/systemd-fsck@.service.d/sm8550-after-expand-home.conf"
+install -m 0644 "$OVL/usr/lib/systemd/system/systemd-growfs@.service.d/sm8550-after-expand-home.conf" \
+  "$R/usr/lib/systemd/system/systemd-growfs@.service.d/sm8550-after-expand-home.conf"
 if [[ -x /usr/bin/growpart ]]; then
   install -D -m 0755 /usr/bin/growpart "$R/usr/bin/growpart"
 fi
 if [[ -d "$R/var/lib/overlays/etc/upper" ]]; then
-  mkdir -p "$R/var/lib/overlays/etc/upper/systemd/system/local-fs.target.wants" \
-    "$R/var/lib/overlays/etc/upper/systemd/system/multi-user.target.wants" 2>/dev/null \
+  mkdir -p "$R/var/lib/overlays/etc/upper/systemd/system/local-fs-pre.target.wants" 2>/dev/null \
     && ln -sfn /usr/lib/systemd/system/steamos-sm8550-expand-home.service \
-      "$R/var/lib/overlays/etc/upper/systemd/system/local-fs.target.wants/steamos-sm8550-expand-home.service" \
-    && ln -sfn /usr/lib/systemd/system/steamos-sm8550-expand-home.service \
-      "$R/var/lib/overlays/etc/upper/systemd/system/multi-user.target.wants/steamos-sm8550-expand-home.service" \
+      "$R/var/lib/overlays/etc/upper/systemd/system/local-fs-pre.target.wants/steamos-sm8550-expand-home.service" \
     || log "WARN: etc overlay upper not writable for expand-home"
+  rm -f "$R/var/lib/overlays/etc/upper/systemd/system/local-fs.target.wants/steamos-sm8550-expand-home.service" \
+        "$R/var/lib/overlays/etc/upper/systemd/system/multi-user.target.wants/steamos-sm8550-expand-home.service"
 fi
 
 # ── LSFG-VK: from external-and-mods/system-fixes/LSFG-VK ──
@@ -142,13 +147,21 @@ if [[ -x "${THOR}/install-auto.sh" ]]; then
       "${THOR}/payload/usr/lib/systemd/system/thorch-touchscreen-setup.service" \
       "$R/usr/lib/systemd/system/thorch-touchscreen-setup.service"
   fi
+  install -D -m 0755 "$OVL/usr/lib/steamos/sm8550-thor-gamescope-touch" \
+    "$R/usr/lib/steamos/sm8550-thor-gamescope-touch"
+  install -D -m 0644 "$OVL/usr/lib/systemd/system/sm8550-thor-gamescope-touch.service" \
+    "$R/usr/lib/systemd/system/sm8550-thor-gamescope-touch.service"
+  install -D -m 0644 "$OVL/usr/lib/systemd/system/sm8550-thor-gamescope-touch.path" \
+    "$R/usr/lib/systemd/system/sm8550-thor-gamescope-touch.path"
   # Never enable the Thor touch stack or KDE autostart on the shared image.
   rm -f \
     "$R/etc/xdg/autostart/thorch-kwin-touch-map.desktop" \
     "$R/etc/xdg/autostart/thorch-display-setup.desktop" \
     "$R/etc/udev/rules.d/99-thorch-touchscreen-calibration.rules" \
     "$R/usr/lib/systemd/system/multi-user.target.wants/thorch-touchscreen-setup.service" \
-    "$R/etc/systemd/system/multi-user.target.wants/thorch-touchscreen-setup.service"
+    "$R/etc/systemd/system/multi-user.target.wants/thorch-touchscreen-setup.service" \
+    "$R/usr/lib/systemd/system/multi-user.target.wants/sm8550-thor-gamescope-touch.path" \
+    "$R/etc/systemd/system/multi-user.target.wants/sm8550-thor-gamescope-touch.path"
   mkdir -p "$R/usr/lib/systemd/system/multi-user.target.wants"
   ln -sfn /usr/lib/systemd/system/odin3-thor-autoinstall.service \
     "$R/usr/lib/systemd/system/multi-user.target.wants/odin3-thor-autoinstall.service"
@@ -157,7 +170,8 @@ if [[ -x "${THOR}/install-auto.sh" ]]; then
       "$R/var/lib/overlays/etc/upper/xdg/autostart/thorch-kwin-touch-map.desktop" \
       "$R/var/lib/overlays/etc/upper/xdg/autostart/thorch-display-setup.desktop" \
       "$R/var/lib/overlays/etc/upper/udev/rules.d/99-thorch-touchscreen-calibration.rules" \
-      "$R/var/lib/overlays/etc/upper/systemd/system/multi-user.target.wants/thorch-touchscreen-setup.service"
+      "$R/var/lib/overlays/etc/upper/systemd/system/multi-user.target.wants/thorch-touchscreen-setup.service" \
+      "$R/var/lib/overlays/etc/upper/systemd/system/multi-user.target.wants/sm8550-thor-gamescope-touch.path"
     mkdir -p "$R/var/lib/overlays/etc/upper/systemd/system/multi-user.target.wants" \
       2>/dev/null || true
     ln -sfn /usr/lib/systemd/system/odin3-thor-autoinstall.service \

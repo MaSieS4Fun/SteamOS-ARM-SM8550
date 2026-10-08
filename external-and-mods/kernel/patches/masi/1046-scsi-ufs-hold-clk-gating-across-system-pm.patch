@@ -1,0 +1,89 @@
+From: gh123man <gh123man@users.noreply.github.com>
+Subject: [PATCH] scsi: ufs: hold clock gating across system PM
+
+xiaodoudou/ROCKNIX 1011. The SW clock-gating worker can be inside
+DME_HIBER_ENTER when system suspend starts; ufshcd_hold() then races the
+gate worker and the UIC command times out with the panel already blank.
+
+Take a clock-gating hold in ufshcd_suspend_prepare() after runtime resume
+and release it from ufshcd_resume_complete().
+
+Signed-off-by: gh123man <gh123man@users.noreply.github.com>
+---
+ drivers/ufs/core/ufshcd.c | 18 ++++++++++++++++--
+ include/ufs/ufshcd.h      |  3 +++
+ 2 files changed, 19 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/ufs/core/ufshcd.c b/drivers/ufs/core/ufshcd.c
+--- a/drivers/ufs/core/ufshcd.c
++++ b/drivers/ufs/core/ufshcd.c
+@@ -11589,6 +11589,10 @@ void ufshcd_resume_complete(struct device *dev)
+ {
+ 	struct ufs_hba *hba = dev_get_drvdata(dev);
+ 
++	if (hba->complete_clkgate_hold) {
++		hba->complete_clkgate_hold = false;
++		ufshcd_release(hba);
++	}
+ 	if (hba->complete_put) {
+ 		ufshcd_rpm_put(hba);
+ 		hba->complete_put = false;
+@@ -11619,6 +11623,7 @@ static bool ufshcd_rpm_ok_for_spm(struct ufs_hba *hba)
+ int __ufshcd_suspend_prepare(struct device *dev, bool rpm_ok_for_spm)
+ {
+ 	struct ufs_hba *hba = dev_get_drvdata(dev);
++	bool rpm_ready_for_spm;
+ 	int ret;
+ 
+ 	/*
+@@ -11634,14 +11639,25 @@ int __ufshcd_suspend_prepare(struct device *dev, bool rpm_ok_for_spm)
+ 		/* Prevent runtime suspend */
+ 		ufshcd_rpm_get_noresume(hba);
+ 		/*
+ 		 * Check if already runtime suspended in same state as system
+ 		 * suspend would be.
+ 		 */
+-		if (!rpm_ok_for_spm || !ufshcd_rpm_ok_for_spm(hba)) {
++		rpm_ready_for_spm = rpm_ok_for_spm && ufshcd_rpm_ok_for_spm(hba);
++		if (!rpm_ready_for_spm) {
+ 			/* RPM state is not ok for SPM, so runtime resume */
+ 			ret = ufshcd_rpm_resume(hba);
+ 			if (ret < 0 && ret != -EACCES) {
+ 				ufshcd_rpm_put(hba);
+ 				return ret;
+ 			}
++
++			/*
++			 * Serialize system PM against the asynchronous clock-gating
++			 * worker.  ufshcd_hold() cancels or drains a pending gate while
++			 * normal IRQ completion is still available.  Keeping this hold
++			 * until .complete prevents a new idle Hibern8 command from racing
++			 * any suspend or resume phase.
++			 */
++			ufshcd_hold(hba);
++			hba->complete_clkgate_hold = true;
+ 		}
+ 		hba->complete_put = true;
+ 	}
+diff --git a/include/ufs/ufshcd.h b/include/ufs/ufshcd.h
+--- a/include/ufs/ufshcd.h
++++ b/include/ufs/ufshcd.h
+@@ -1056,6 +1056,8 @@ struct ufs_hba {
+  * @nr_queues: number of Queues of different queue types
+  * @complete_put: whether or not to call ufshcd_rpm_put() from inside
+  *	ufshcd_resume_complete()
++ * @complete_clkgate_hold: whether ufshcd_resume_complete() must release
++ *	clock-gating hold acquired by ufshcd_suspend_prepare()
+  * @mcq_sup: is mcq supported by UFSHC
+  * @mcq_enabled: is mcq ready to accept requests
+  * @mcq_esi_enabled: is mcq ESI configured
+@@ -1249,6 +1251,7 @@ struct ufs_hba {
+ 	unsigned int nr_hw_queues;
+ 	unsigned int nr_queues[HCTX_MAX_TYPES];
+ 	bool complete_put;
++	bool complete_clkgate_hold;
+ 	bool scsi_host_added;
+ 	bool mcq_sup;
+ 	bool lsdb_sup;
+--
+2.50.0

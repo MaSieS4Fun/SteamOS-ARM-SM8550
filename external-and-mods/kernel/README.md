@@ -65,7 +65,7 @@ This kernel is assembled from public upstream work. **Full attribution and
 | Project | Link | Role here |
 |---------|------|-----------|
 | Linux kernel | https://www.kernel.org · [CDN](https://cdn.kernel.org/pub/linux/kernel) | Vanilla sources compiled by `./make.sh` |
-| Armbian build | https://github.com/armbian/build | SM8550 patch archive (`sm8550-7.0`, …) — AYN boards, SoC, rsinput, panels |
+| Armbian build | https://github.com/armbian/build | Live SM8550 archive `sm8550-<major.minor>` on `main` (today `sm8550-7.2` for linux-7.2.8), plus board DTS in `dt/`. Retired `sm8550-7.0` from a pinned git commit. |
 | Armbian firmware | https://github.com/armbian/firmware | Firmware tree staged into `output/.../firmware/` |
 
 ### Boot / multi-device / suspend

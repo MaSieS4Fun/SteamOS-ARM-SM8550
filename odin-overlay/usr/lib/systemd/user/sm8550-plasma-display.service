@@ -1,0 +1,17 @@
+[Unit]
+Description=SM8550 Plasma display hotplug recovery
+After=plasma-kwin_wayland.service
+PartOf=plasma-workspace.target
+PartOf=plasma-workspace-wayland.target
+
+[Service]
+Type=simple
+ExecStartPre=-/usr/lib/steamos/sm8550-drm-poll on
+ExecStartPre=/usr/lib/steamos/sm8550-device-profile seed
+ExecStart=/usr/lib/steamos/sm8550-plasma-display watch
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=plasma-workspace.target
+WantedBy=plasma-workspace-wayland.target

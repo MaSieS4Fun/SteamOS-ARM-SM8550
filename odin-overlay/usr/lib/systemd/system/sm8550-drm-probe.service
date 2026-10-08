@@ -1,0 +1,7 @@
+[Unit]
+Description=Detect a USB-C dock monitor for Plasma
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/steamos/sm8550-drm-poll probe
+TimeoutStartSec=20

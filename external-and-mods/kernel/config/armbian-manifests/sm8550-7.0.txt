@@ -1,4 +1,6 @@
 # Armbian sm8550-7.0 patch manifest (fallback when GitHub API rate-limits).
+# Retired from origin/main on 2026-09-25; fetched from git SHA
+# ARMBIAN_ARCHIVE_FALLBACK_SM8550_7_0 (default 967ae191dbc495a766aeba3b195beff7c3fb46aa).
 # Update with: ./scripts/update-armbian-manifests.sh (optional)
 0001-msm-adreno-enable-A32.patch
 0002-qcom-dispcc-sm8550-Fix-disp_cc_mdss_mdp_clk_src.patch
